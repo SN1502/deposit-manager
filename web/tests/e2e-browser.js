@@ -55,33 +55,37 @@ function check(c, m) { if (!c) { fails.push(m); console.log('  ✗ ' + m); } els
   check(errs >= 4, 'empty form shows field errors (' + errs + ')');
   await shot('b01-form-errors');
   await page.selectOption('#main select', { label: 'Kamala — Vandalur' });
-  await page.fill('input[placeholder^="e.g. SBI"]', 'IOB Vandalur');
-  await page.fill('input[placeholder^="As in the passbook"]', '1234 5678 9012');
+  await page.fill('input[placeholder^="e.g. SBI, Indian"]', 'IOB');
+  await page.fill('input[placeholder="e.g. SBI001245"]', '1234 5678 9012');
   await page.locator('.input-wrap.has-prefix input').first().fill('2,50,000');
-  await page.fill('input[placeholder="e.g. 7.25"]', '7');
-  await page.click('.freq-pick button:has-text("Monthly")');
+  await page.fill('input[placeholder="e.g. 7.1"]', '7');
   const dates = page.locator('input[type=date]');
-  await dates.nth(0).fill('2026-09-15');
-  await dates.nth(1).fill('2026-10-15');
-  await page.click('.quick button:has-text("2 years")');
+  await dates.nth(0).fill('2026-04-10');
+  await page.fill('input[placeholder="e.g. 365"]', '180');
   await settle(200);
-  check(/Next payment dates: 15 Oct, 15 Nov, 15 Dec, 15 Jan/.test(await page.locator('.preview-dates').innerText()), 'live preview of the next payment dates');
+  check((await dates.nth(1).inputValue()) === '2026-10-07', 'Deposit Date + 180 days fills the Mature Date');
+  check((await dates.nth(2).inputValue()) === '2026-10-07', 'Income Date follows the Mature Date');
+  check(/position: Maturing Soon/.test(await page.locator('.preview-dates').innerText()), 'live preview shows the position');
+  await dates.nth(1).fill('2026-10-10');
+  await settle(200);
+  check((await page.locator('input[placeholder="e.g. 365"]').inputValue()) === '183', 'changing the Mature Date updates No of Days');
+  await page.fill('input[placeholder="e.g. 365"]', '180');
   await page.click('.sticky-actions .btn.primary');
   await settle(1600);
   check(await page.locator('.dialog').count() === 0, 'no reminder prompt when the browser has notifications blocked');
   const dep = await page.evaluate(() => DM.app.data.deposits[0]);
-  check(dep.depositAmount === 250000 && dep.paymentAmount === 1458.33 && dep.accountNumber === '123456789012' && dep.maturityDate === '2028-09-15',
-    'deposit saved: ₹2,50,000 @7% monthly → ₹1,458.33, account spaces removed, maturity +2y');
+  check(dep.id === '1' && dep.depositAmount === 250000 && dep.interestAmount === 8750 && dep.accountNumber === '123456789012' && dep.maturityDate === '2026-10-07',
+    'saved as S.No 1: ₹2,50,000 @7% for 180 days → ₹8,750 interest, Deposit No spaces removed');
 
   console.log('3. Mark received and check status indicator');
   await page.click('.tab:has-text("Payments")'); await settle();
   await page.click('.seg button:has-text("Upcoming")');
   await page.click('.fchip:has-text("90 days")'); await settle();
   await page.locator('.recv-btn').first().click();
-  await page.fill('.sheet .input-wrap input', '1450');
+  await page.fill('.sheet .input-wrap input', '8700');
   await page.click('.sheet .btn.ok'); await settle(500);
   const p1 = await page.evaluate(() => DM.app.data.payments.find(p => p.status === 'Received'));
-  check(p1 && p1.receivedAmount === 1450 && p1.dueDate === '2026-10-15', 'partial amount recorded against 15 Oct');
+  check(p1 && p1.receivedAmount === 8700 && p1.dueDate === '2026-10-07', 'amount actually received recorded against the 7 Oct Income Date');
   check(/Not exported/.test(await page.locator('.save-pill').innerText()), 'status says changes not exported yet');
 
   console.log('4. Export Excel + template');
@@ -98,25 +102,26 @@ import openpyxl
 wb=openpyxl.load_workbook('${exp}')
 d=wb['Deposits']; p=wb['Payments']
 print(wb.sheetnames)
-print(d['F2'].value, d['G2'].value, d['J2'].value, d['L2'].value.date())
-print(p.max_row-1, [c.value for c in p[2]][4:9])
+print(d['A2'].value, d['C2'].value, d['E2'].value, d['G2'].value, d['I2'].value, d['J2'].value.date(), d['K2'].value, d['N2'].value)
+print(p.max_row-1, [c.value for c in p[2]][5:9])
 t=openpyxl.load_workbook('${tpl}'); print(t.sheetnames, t['Deposits'].max_row)
 "`).toString();
   console.log(py.split('\n').map(l => '     ' + l).join('\n'));
-  check(/\['FamilyMembers', 'Deposits', 'Payments', 'Notifications'\]/.test(py), 'exported workbook has the 4 sheets');
-  check(/123456789012 250000 Monthly 2026-10-15/.test(py), 'exported deposit row correct (text account, number amount, real date)');
-  check(/\['Instructions', 'FamilyMembers', 'Deposits', 'Payments', 'Notifications'\] 1/.test(py), 'template has instructions + empty sheets');
+  check(/\['Deposits', 'FamilyMembers', 'Payments', 'Notifications'\]/.test(py), 'exported workbook: Deposits first, then supporting sheets');
+  check(/1 123456789012 Simple 250000 180 2026-10-07 Maturing Soon 8750/.test(py), 'exported row in the 16-column layout (text Deposit No, real date, derived position)');
+  check(/\[8750, 8700, datetime/.test(py), 'Payments sheet has expected and received interest');
+  check(/\['Instructions', 'Deposits', 'FamilyMembers', 'Payments', 'Notifications'\] 1/.test(py), 'template: instructions + empty sheets');
   fs.rmSync(path.join(OUT, 'lo2'), { recursive: true, force: true });
   execSync(`cd ${OUT} && timeout 90 soffice --headless --convert-to pdf --outdir lo2 export.xlsx >/dev/null 2>&1 || true`);
   check(fs.existsSync(path.join(OUT, 'lo2', 'export.pdf')), 'LibreOffice opens and renders the exported workbook');
 
   console.log('5. Import over existing data, backup and restore');
   const [fc] = await Promise.all([page.waitForEvent('filechooser'), page.click('text=Import Excel file')]);
-  await fc.setFiles(path.join(OUT, 'family-messy.xlsx'));
+  await fc.setFiles(path.join(__dirname, 'fixtures', 'family-16-columns.xlsx'));
   await page.waitForSelector('.sheet h3:has-text("Import from Excel")');
   check(/This replaces the data in the app/.test(await page.locator('.sheet').innerText()), 'warns that import replaces current data');
   await page.click('.sheet .sheet-actions .btn.primary'); await settle(800);
-  check(await page.evaluate(() => DM.app.data.members.length) === 4, 'imported family data');
+  check(await page.evaluate(() => DM.app.data.deposits.length) === 20, 'imported the 20 family deposits');
   await page.click('.tab:has-text("Settings")'); await settle();
   await page.click('text=Restore previous data');
   await page.click('.dialog .btn.primary'); await settle(600);

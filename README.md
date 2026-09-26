@@ -1,8 +1,14 @@
 # Deposit Manager — Android app
 
-Tracks every family member's deposits, works out each interest payment date, reminds you before
-payments and maturity, and keeps everything in one Excel workbook
-(`FamilyMembers`, `Deposits`, `Payments`, `Notifications`).
+Tracks every family deposit, reminds you before each maturity and interest Income Date, and keeps
+everything in your own Excel sheet with its 16 columns:
+
+`S.No · Bank Name · Deposit No · Depositer Name · Interest type · percentage · Deposit Value ·
+Deposit Date · No of Days · Mature Date · Deposit position · monthly Renewal Date · Income Date ·
+Amount of Intersest · Deposited Village · Remarks`
+
+The app adds `FamilyMembers` (phone numbers), `Payments` (interest received / pending / overdue)
+and `Notifications` sheets beside it.
 
 The app has **no internet permission** — it cannot send your data anywhere. Account numbers are
 shown only as `XXXX1234`, and an optional PIN / fingerprint lock protects the app.
@@ -49,9 +55,9 @@ already in `.github/workflows/` and builds on every push.
 
 ## First start
 
-* **Open my Excel file** loads all family members and deposits at once.
-  Don't have one? **Get a blank Excel template**, fill in `FamilyMembers` and `Deposits` in Excel or
-  Google Sheets (the `Instructions` sheet explains each column), then open it.
+* **Open my Excel file** loads every deposit at once from your 16-column sheet (whatever the sheet
+  is called — it is recognised by its headings). Each Depositer Name becomes a family member.
+  Don't have one? **Get a blank Excel template** (the `Instructions` sheet explains each column).
 * Or **Start with an empty book** and add members and deposits in the app.
 
 When asked, choose where the Excel file lives (for example *Downloads/DepositManager.xlsx*).
@@ -62,17 +68,30 @@ Excel or Sheets, the app notices next time it opens and asks whether to load tho
 
 | Screen | What it's for |
 |---|---|
-| Home (Dashboard) | Totals, overdue and upcoming payments, income expected by frequency, maturing deposits |
-| Family | Members, their deposits and totals; add / edit members |
-| Deposits | Active and Closed tabs (closed deposits keep their full history) |
-| Add / Edit deposit | One form; payment dates are generated automatically from the first payment date |
-| Deposit details | Masked account number (tap *Show*, PIN asked if the lock is on), next payment, full schedule, close / reopen |
-| Payments | Upcoming (overdue, today, next 7 days, later) and History with monthly totals |
-| Search & filters | By name, village, bank, last digits of an account; filter by status, frequency, member, village, bank |
+| Home (Dashboard) | Totals, maturing soon, overdue and upcoming interest, expected interest by type (Simple / Cumulative) |
+| Family | Depositers, their deposits and totals; add / edit members and phone numbers |
+| Deposits | Active and Closed tabs with S.No and position (Active / Maturing Soon / Matured / Closed) |
+| Add / Edit deposit | The 16 columns; No of Days ↔ Mature Date fill each other in; interest calculated like your sheet |
+| Deposit details | Masked Deposit No (tap *Show*, PIN asked if the lock is on), interest income, maturity, all 16 columns, renew / close / reopen |
+| Payments | Upcoming interest (overdue, today, next 7 days, later), monthly renewal dates, and History with monthly totals |
+| Search & filters | By name, village, bank, S.No, Deposit No; filter by position, interest type, depositer, village, bank |
 | Settings | Excel file (open / create / save copy / share / template), reminders, PIN & fingerprint, theme, backup/restore |
 
-Reminders: 7, 3 and 1 day before each payment and on the day; 30, 7 and 1 day before maturity and
-on the day (all adjustable, default at 9:00 AM). They arrive even when the app is closed and come
+How the worked-out columns are calculated:
+
+* **Mature Date** = Deposit Date + No of Days (enter either one).
+* **Amount of Intersest** (when left blank) = Deposit Value × percentage × months ÷ 12, with months
+  = No of Days × 12 ÷ 365 rounded (180 days = 6 months) — the same way the family sheet does it.
+* **Deposit position**: Closed if closed; Matured if the Mature Date has passed; Maturing Soon within
+  30 days; otherwise Active.
+* **monthly Renewal Date**: the next date on the deposit's day of the month, never after the Mature Date.
+* **Income Date**: the Mature Date unless you set another date.
+* A deposit closed before its Mature Date gets "Closed early on DD-MM-YYYY" in Remarks, so the date
+  is kept in Excel.
+
+Reminders: 30, 7 and 1 day before maturity and on the day; 7, 3 and 1 day before an Income Date and
+on the day (one reminder when both fall on the same day); monthly renewal dates if switched on
+(all adjustable, default at 9:00 AM). They arrive even when the app is closed and come
 back after the phone restarts.
 
 ## Project layout
@@ -102,7 +121,7 @@ The screen the app shows is a single offline web page built from `web/src`:
 ```
 web/src/js/core.js       dates, money formatting, helpers
 web/src/js/xlsx.js       Excel reader/writer (JSZip)
-web/src/js/data.js       members, deposits, payment schedules, reminders, import/export
+web/src/js/data.js       deposits (16 columns), interest income, reminders, import/export
 web/src/js/platform.js   Android bridge / browser file access
 web/src/js/app.js        state, autosave to Excel, navigation, PIN lock
 web/src/js/screens.js    all screens
@@ -112,4 +131,4 @@ web/src/css/app.css      styles (light + dark)
 After editing, run `node web/tools/build.js` — it writes `web/dist/DepositManager.html` and
 copies it to `app/src/main/assets/index.html`. Commit and push; GitHub builds a new APK.
 Tests (need Playwright + Chromium): `node web/tests/engine.test.js`, `web/tests/e2e-android.js`,
-`web/tests/e2e-browser.js`.
+`web/tests/e2e-browser.js`. `web/tests/fixtures/family-16-columns.xlsx` is the family's sample sheet.

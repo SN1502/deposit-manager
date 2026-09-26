@@ -15,27 +15,31 @@
     return dep.bank + ' · ' + U.maskAccount(dep.accountNumber);
   }
 
+  function positionChip(pos) {
+    return UI.statusChip(pos);
+  }
+
   function depositItem(dep, opts) {
     opts = opts || {};
-    var today = T(), m = M.member(D(), dep.memberId), sub;
-    if (dep.status === 'Closed') sub = 'Closed' + (dep.closedDate ? ' on ' + U.fmtDate(dep.closedDate) : '');
-    else if (!M.hasSchedule(dep)) sub = h('span', { style: 'color:var(--warn);font-weight:600' }, 'Payment dates not set — tap to fix');
+    var today = T(), m = M.member(D(), dep.memberId), pos = M.position(dep, today), sub;
+    if (pos === 'Closed') sub = 'Closed' + (dep.closedDate ? ' on ' + U.fmtDate(dep.closedDate) : '');
+    else if (!U.isValidISO(dep.maturityDate)) sub = h('span', { style: 'color:var(--warn);font-weight:600' }, 'Mature date not set — tap to fix');
     else {
       var sum = M.depositSummary(D(), dep, today);
-      if (sum.overdue.length) sub = h('span', { style: 'color:var(--danger);font-weight:600' }, U.plural(sum.overdue.length, 'payment') + ' overdue');
-      else if (sum.next) sub = 'Next ' + U.fmtDate(sum.next.dueDate) + ' · ' + money(sum.next.expectedAmount);
-      else if (dep.maturityDate && dep.maturityDate < today) sub = h('span', { style: 'color:var(--warn);font-weight:600' }, 'Matured on ' + U.fmtDate(dep.maturityDate) + ' — close it?');
-      else sub = dep.maturityDate ? 'Matures ' + U.fmtDate(dep.maturityDate) : '';
+      if (sum.overdue.length) sub = h('span', { style: 'color:var(--danger);font-weight:600' }, 'Interest ' + money(sum.overdueTotal) + ' overdue');
+      else if (pos === 'Matured') sub = h('span', { style: 'color:var(--warn);font-weight:600' }, 'Matured ' + U.fmtDate(dep.maturityDate) + ' — renew or close?');
+      else if (pos === 'Maturing Soon') sub = h('span', { style: 'color:var(--warn);font-weight:600' }, 'Matures ' + U.relDays(dep.maturityDate, today) + ' · ' + U.fmtDate(dep.maturityDate));
+      else sub = 'Matures ' + U.fmtDate(dep.maturityDate) + ' · interest ' + money(dep.interestAmount);
     }
     return h('button', { class: 'item', onclick: function () { A().nav.go('deposit/' + dep.id); } },
       h('div', { class: 'avatar' }, UI.initials(m ? m.name : '?')),
       h('div', { class: 'grow' },
         h('div', { class: 't1 ellipsis' }, opts.hideMember ? dep.bank : (m ? m.name : '(Unknown member)')),
-        h('div', { class: 't2 ellipsis' }, opts.hideMember ? U.maskAccount(dep.accountNumber) + (dep.village ? ' · ' + dep.village : '') : depositLine(dep)),
+        h('div', { class: 't2 ellipsis' }, 'S.No ' + dep.id + ' · ' + (opts.hideMember ? U.maskAccount(dep.accountNumber) + (dep.village ? ' · ' + dep.village : '') : depositLine(dep))),
         sub ? h('div', { class: 't3 ellipsis' }, sub) : null),
       h('div', { class: 'right' },
         h('div', { class: 'amt' }, money(dep.depositAmount)),
-        h('div', { class: 't3' }, dep.status === 'Closed' ? UI.statusChip('Closed') : (dep.frequency || '—'))));
+        h('div', { class: 't3' }, pos === 'Active' ? dep.interestType : positionChip(pos))));
   }
 
   function dueText(p) {
@@ -68,7 +72,7 @@
     UI.dateBox(p.status === 'Received' && opts.byReceived ? p.receivedDate : p.dueDate, boxCls),
     h('div', { class: 'grow' },
       h('div', { class: 't1 ellipsis' }, opts.hideMember ? dep.bank : (m ? m.name : '?')),
-      h('div', { class: 't2 ellipsis' }, opts.hideMember ? U.maskAccount(dep.accountNumber) + ' · ' + dep.frequency : depositLine(dep)),
+      h('div', { class: 't2 ellipsis' }, opts.hideMember ? U.maskAccount(dep.accountNumber) + ' · ' + dep.interestType : depositLine(dep)),
       h('div', { class: 't3 ellipsis' }, opts.history ? ('Due ' + U.fmtDate(p.dueDate) + (+p.receivedAmount !== +p.expectedAmount ? ' · expected ' + money(p.expectedAmount) : '')) : dueText(p))),
     right);
   }
@@ -97,6 +101,18 @@
       h('div', { class: 'grow' }, h('div', { class: 't1 ellipsis', style: 'font-size:15px' }, t1), h('div', { class: 't3 ellipsis' }, t2)),
       h('div', { class: 'right' }, h('div', { class: 'amt' }, money(rec ? p.receivedAmount : p.expectedAmount)),
         h('div', { class: 'mt-8' }, rec ? UI.statusChip('Received') : quickReceive(p))));
+  }
+
+  /** A monthly renewal date row. */
+  function renewalItem(r) {
+    var dep = r.deposit, m = M.member(D(), dep.memberId), today = T();
+    return h('button', { class: 'item', onclick: function () { A().nav.go('deposit/' + dep.id); } },
+      UI.dateBox(r.date, r.date === today ? 'today' : ''),
+      h('div', { class: 'grow' },
+        h('div', { class: 't1 ellipsis' }, m ? m.name : '?'),
+        h('div', { class: 't2 ellipsis' }, 'S.No ' + dep.id + ' · ' + depositLine(dep)),
+        h('div', { class: 't3 ellipsis' }, 'Monthly renewal · ' + U.relDays(r.date, today) + ' · matures ' + U.fmtDate(dep.maturityDate))),
+      h('div', { class: 'right' }, h('div', { class: 'amt' }, money(dep.depositAmount))));
   }
 
   /** Render a long list in chunks so big histories stay fast. */
@@ -137,7 +153,7 @@
       var note = UI.input({ type: 'text', value: p.notes || '', placeholder: 'e.g. credited to savings account' });
       var expWrap = UI.moneyInput({ value: String(p.expectedAmount) });
       var editBox = h('div', { style: 'display:none' },
-        UI.field('Expected amount for this payment', expWrap.input, { wrap: expWrap.wrap, hint: 'Only this one payment changes. To change all future payments, edit the deposit.' }),
+        UI.field('Expected interest', expWrap.input, { wrap: expWrap.wrap, hint: 'Only this record changes. To change the Amount of Interest itself, edit the deposit.' }),
         h('button', { class: 'btn outline block', onclick: function () {
           var v = U.toNumber(expWrap.input.value);
           if (!(v >= 0)) { UI.toast('Enter a valid amount'); return; }
@@ -147,11 +163,11 @@
           UI.toast('Expected amount updated');
         } }, 'Save expected amount'));
       return [
-        h('h3', null, 'Mark as received'),
-        h('div', { class: 'sub' }, (m ? m.name : '') + ' · ' + depositLine(dep)),
+        h('h3', null, 'Mark interest as received'),
+        h('div', { class: 'sub' }, (m ? m.name : '') + ' · S.No ' + dep.id + ' · ' + depositLine(dep)),
         h('div', { class: 'card', style: 'background:var(--surface-2);box-shadow:none' },
           h('div', { class: 'row' },
-            h('div', { class: 'grow' }, h('div', { class: 'muted small' }, 'Due date'), h('div', { class: 'strong' }, U.fmtDate(p.dueDate))),
+            h('div', { class: 'grow' }, h('div', { class: 'muted small' }, 'Income Date'), h('div', { class: 'strong' }, U.fmtDate(p.dueDate))),
             h('div', { class: 'right' }, h('div', { class: 'muted small' }, 'Expected'), h('div', { class: 'strong num' }, money(p.expectedAmount))))),
         UI.field('Amount received', amt.input, { wrap: amt.wrap }),
         UI.field('Date received', date),
@@ -164,8 +180,8 @@
             var nxt = M.markReceived(D(), p.id, { amount: v, date: date.value, notes: note.value }, T());
             A().commit();
             close();
-            UI.toast(nxt ? 'Received ✓  Next payment: ' + U.fmtDate(nxt.dueDate) + ' · ' + money(nxt.expectedAmount)
-              : 'Received ✓  No more payments scheduled for this deposit', {
+            UI.toast(nxt ? 'Received ✓  Next interest: ' + U.fmtDate(nxt.dueDate) + ' · ' + money(nxt.expectedAmount)
+              : 'Interest received ✓', {
               action: 'Undo', onAction: function () { M.markNotReceived(D(), p.id, T()); A().commit(); UI.toast('Undone'); }
             });
           }
@@ -185,7 +201,7 @@
       var date = UI.input({ type: 'date', value: p.receivedDate });
       var note = UI.input({ type: 'text', value: p.notes || '' });
       var kv = h('div', { class: 'kv' },
-        h('div', { class: 'k' }, 'Due date'), h('div', { class: 'v' }, U.fmtDate(p.dueDate)),
+        h('div', { class: 'k' }, 'Income Date'), h('div', { class: 'v' }, U.fmtDate(p.dueDate)),
         h('div', { class: 'k' }, 'Expected'), h('div', { class: 'v' }, money(p.expectedAmount)),
         h('div', { class: 'k' }, 'Received'), h('div', { class: 'v' }, money(p.receivedAmount)),
         h('div', { class: 'k' }, 'Received on'), h('div', { class: 'v' }, U.fmtDate(p.receivedDate)),
@@ -206,7 +222,7 @@
       var actions = h('div', { class: 'btn-row mt-16' },
         h('button', { class: 'btn outline', onclick: function () { edit.style.display = ''; actions.style.display = 'none'; } }, UI.icon('edit', 'sm'), 'Edit'),
         h('button', { class: 'btn danger', onclick: function () {
-          UI.confirm('Mark as not received?', 'Use this if it was marked by mistake. The payment goes back to ' +
+          UI.confirm('Mark as not received?', 'Use this if it was marked by mistake. The interest goes back to ' +
             (p.dueDate < T() ? 'overdue.' : 'pending.'), 'Mark not received').then(function (ok) {
             if (!ok) return;
             M.markNotReceived(D(), p.id, T());
@@ -216,7 +232,7 @@
           });
         } }, 'Not received'));
       return [
-        h('h3', null, 'Payment received'),
+        h('h3', null, 'Interest received'),
         h('div', { class: 'sub' }, (m ? m.name : '') + ' · ' + depositLine(dep)),
         kv, actions, edit,
         h('button', { class: 'link mt-12', onclick: function () { close(); A().nav.go('deposit/' + dep.id); } }, 'Open deposit')
@@ -267,7 +283,7 @@
       h('button', { class: 'choice primary', onclick: function () { A().importFromPicker(); } },
         h('div', { class: 'ci' }, UI.icon('file', 'lg')),
         h('div', { class: 'grow' }, h('div', { class: 'ct' }, 'Open my Excel file'),
-          h('div', { class: 'cd' }, 'Load all family members and deposits at once from one .xlsx workbook.'))),
+          h('div', { class: 'cd' }, 'Load every deposit at once from your .xlsx sheet (S.No, Bank Name, Deposit No, Depositer Name …).'))),
       h('button', { class: 'choice', onclick: function () { A().downloadTemplate(); } },
         h('div', { class: 'ci' }, UI.icon('download', 'lg')),
         h('div', { class: 'grow' }, h('div', { class: 'ct' }, 'Get a blank Excel template'),
@@ -279,10 +295,10 @@
       h('div', { class: 'card mt-16' },
         h('h2', null, 'How it works'),
         h('ol', { class: 'steps' },
-          h('li', null, 'All data lives in one Excel workbook with four sheets: FamilyMembers, Deposits, Payments and Notifications.'),
-          h('li', null, 'Enter each deposit once. The app works out every payment date from the first payment date and how often it pays.'),
-          h('li', null, 'You get reminders 7, 3 and 1 day before each payment, on the day, and before a deposit matures.'),
-          h('li', null, 'Nothing is uploaded anywhere. Account numbers are shown only as XXXX1234.'))));
+          h('li', null, 'Your deposits stay in your own Excel sheet with its 16 columns. The app adds Payments and Notifications sheets beside it.'),
+          h('li', null, 'Enter each deposit once. The app works out the Mature Date, the interest, the monthly renewal date and whether it is maturing soon.'),
+          h('li', null, 'You get reminders before each Income Date and Mature Date: 30, 7, 3 and 1 day before, and on the day.'),
+          h('li', null, 'Nothing is uploaded anywhere. Deposit numbers are shown only as XXXX1234.'))));
     return { title: 'Welcome', body: body, tabs: false, showStatus: false };
   };
 
@@ -314,7 +330,7 @@
       nodes.push(h('div', { class: 'count-grid' },
         h('div', null, h('b', null, String(c.members + c.membersAdded)), h('span', null, 'family members')),
         h('div', null, h('b', null, String(c.deposits)), h('span', null, 'deposits')),
-        h('div', null, h('b', null, String(c.payments)), h('span', null, 'payment rows'))));
+        h('div', null, h('b', null, String(c.payments)), h('span', null, 'interest rows'))));
       if (prep.errors.length) nodes.push(UI.banner('err', 'alert', 'Problems', prep.errors.join(' ')));
       if (prep.warnings.length) {
         nodes.push(h('div', { class: 'strong mt-8' }, U.plural(prep.warnings.length, 'thing') + ' to check'));
@@ -325,11 +341,11 @@
         var pick = function (v) { choice.pastAs = v; r1.classList.toggle('on', v === 'received'); r2.classList.toggle('on', v === 'pending'); };
         r1 = h('button', { class: 'radio-card on', onclick: function () { pick('received'); } }, h('span', { class: 'dot' }),
           h('div', null, h('div', { class: 'rt' }, 'Already received'),
-            h('div', { class: 'rd' }, 'Mark them as received on their due dates. Choose this if the family has been getting these payments.')));
+            h('div', { class: 'rd' }, 'Record the interest as received on its Income Date. Choose this if the family already has this money.')));
         r2 = h('button', { class: 'radio-card', onclick: function () { pick('pending'); } }, h('span', { class: 'dot' }),
           h('div', null, h('div', { class: 'rt' }, 'Not received yet'),
             h('div', { class: 'rd' }, 'Show them as overdue so you can tick each one off.')));
-        nodes.push(h('div', { class: 'strong mt-16' }, U.plural(prep.pastCount, 'payment date') + ' are before today and not in the Payments sheet'));
+        nodes.push(h('div', { class: 'strong mt-16' }, U.plural(prep.pastCount, 'interest payment') + (prep.pastCount === 1 ? ' is' : ' are') + ' already due or on closed deposits'));
         nodes.push(h('div', { class: 'muted small', style: 'margin:2px 0 10px' }, 'How should the app treat them?'));
         nodes.push(r1, r2);
       }
@@ -338,7 +354,7 @@
         nodes.push(h('div', { class: 'card mt-16', style: 'background:var(--surface-2);box-shadow:none;margin-bottom:10px' },
           UI.switchRow('Keep saving changes into this file',
             other.length ? 'This file also has other sheets (' + other.join(', ') + '). They would be removed when the app saves, so this is off. You can create a new file afterwards.'
-              : 'The app rewrites this file in its own layout and fills in the Payments and Notifications sheets.',
+              : 'Your 16 columns stay as they are (the sheet is named Deposits). The app adds Payments, Notifications and FamilyMembers sheets.',
             choice.link, function (v) { choice.link = v; })));
       }
       if (app.hasData() && o.source !== 'linked') {
@@ -381,7 +397,7 @@
     }
 
     if (P.notify.mode === 'phone' && app.prefs.notify.enabled && P.notify.status() !== 'granted') {
-      body.push(UI.banner('info', 'bell', 'Reminders are switched off on this phone', 'Allow notifications so you are reminded before each payment.',
+      body.push(UI.banner('info', 'bell', 'Reminders are switched off on this phone', 'Allow notifications so you are reminded before each maturity and Income Date.',
         h('button', { class: 'btn small primary', onclick: function () {
           P.notify.request().then(function (st) {
             UI.toast(st === 'granted' ? 'Reminders are on' : 'Please allow notifications for Deposit Manager in the phone settings');
@@ -395,18 +411,24 @@
     var att = [];
     if (st.overdue.count) {
       att.push(h('div', { class: 'att-line' }, h('span', { class: 'att-icon red' }, UI.icon('alert', 'sm')),
-        h('div', { class: 'grow' }, h('div', { class: 'strong' }, U.plural(st.overdue.count, 'payment') + ' overdue'), h('div', { class: 'small muted' }, money(st.overdue.amount) + ' not yet received')),
+        h('div', { class: 'grow' }, h('div', { class: 'strong' }, U.plural(st.overdue.count, 'interest payment') + ' overdue'), h('div', { class: 'small muted' }, money(st.overdue.amount) + ' not yet received')),
         linkBtn('View', function () { app.nav.tab('payments'); })));
     }
     if (st.matured.length) {
       att.push(h('div', { class: 'att-line' }, h('span', { class: 'att-icon amber' }, UI.icon('clock', 'sm')),
-        h('div', { class: 'grow' }, h('div', { class: 'strong' }, U.plural(st.matured.length, 'deposit') + ' matured'), h('div', { class: 'small muted' }, 'Renewed or withdrawn? Close them to keep things tidy.')),
-        linkBtn('View', function () { app.nav.go(st.matured.length === 1 ? 'deposit/' + st.matured[0].id : 'search?maturedOnly=1'); })));
+        h('div', { class: 'grow' }, h('div', { class: 'strong' }, U.plural(st.matured.length, 'deposit') + ' matured'), h('div', { class: 'small muted' }, 'Renew them, or close them if the money was withdrawn.')),
+        linkBtn('View', function () { app.nav.go(st.matured.length === 1 ? 'deposit/' + st.matured[0].id : 'search?position=Matured'); })));
     }
     if (st.incomplete.length) {
       att.push(h('div', { class: 'att-line' }, h('span', { class: 'att-icon amber' }, UI.icon('calendar', 'sm')),
-        h('div', { class: 'grow' }, h('div', { class: 'strong' }, U.plural(st.incomplete.length, 'deposit') + ' without payment dates'), h('div', { class: 'small muted' }, 'Add the first payment date and frequency.')),
+        h('div', { class: 'grow' }, h('div', { class: 'strong' }, U.plural(st.incomplete.length, 'deposit') + ' without a mature date'), h('div', { class: 'small muted' }, 'Add the Deposit Date and No of Days.')),
         linkBtn('Fix', function () { app.nav.go('deposit-edit/' + st.incomplete[0].id); })));
+    }
+    if (st.maturingSoon.length) {
+      att.push(h('div', { class: 'att-line' }, h('span', { class: 'att-icon amber' }, UI.icon('calendar', 'sm')),
+        h('div', { class: 'grow' }, h('div', { class: 'strong' }, U.plural(st.maturingSoon.length, 'deposit') + ' maturing soon'),
+          h('div', { class: 'small muted' }, 'Within ' + M.MATURING_SOON_DAYS + ' days — first on ' + U.fmtDate(st.maturingSoon[0].maturityDate))),
+        linkBtn('View', function () { app.nav.go('search?position=Maturing%20Soon'); })));
     }
     if (att.length) body.push(h('div', { class: 'card attention' + (st.overdue.count ? '' : ' soft') }, h('h2', null, 'Needs attention'), att));
 
@@ -421,8 +443,9 @@
       stat('Family members', String(st.members), null, function () { app.nav.tab('members'); }, '', 'users'),
       stat('Active deposits', String(st.active), null, function () { app.nav.tab('deposits'); }, '', 'bank'),
       stat('Closed deposits', String(st.closed), 'history kept', function () { app.nav.tab('deposits?tab=closed'); }, '', 'history'),
-      stat('Upcoming (30 days)', String(st.upcoming30.count), money(st.upcoming30.amount), function () { app.nav.tab('payments'); }, '', 'calendar'),
-      stat('Pending payments', String(st.pending), 'scheduled, not yet due', function () { app.nav.tab('payments?range=all'); }, '', 'clock'),
+      stat('Maturing soon', String(st.maturingSoon.length), 'within ' + M.MATURING_SOON_DAYS + ' days', function () { app.nav.go('search?position=Maturing%20Soon'); }, '', 'clock'),
+      stat('Interest due (30 days)', String(st.upcoming30.count), money(st.upcoming30.amount), function () { app.nav.tab('payments'); }, '', 'calendar'),
+      stat('Interest pending', String(st.pending), money(st.interestExpected) + ' to come', function () { app.nav.tab('payments?range=all'); }, '', 'rupee'),
       stat('Overdue', String(st.overdue.count), st.overdue.count ? money(st.overdue.amount) : 'nothing overdue', function () { app.nav.tab('payments'); }, st.overdue.count ? 'alert' : '', 'alert')));
 
     // coming up
@@ -433,7 +456,7 @@
       soon.forEach(function (p) { var n = paymentItem(p); if (n) l.appendChild(n); });
       body.push(l);
     } else {
-      body.push(h('div', { class: 'card muted' }, 'No payments due in the next 30 days.'));
+      body.push(h('div', { class: 'card muted' }, 'No interest due in the next 30 days.'));
     }
 
     // this month
@@ -442,16 +465,16 @@
         h('div', { class: 'grow' }, h('div', { class: 'muted small' }, 'Received'), h('div', { class: 'strong num', style: 'font-size:20px;color:var(--ok)' }, money(st.thisMonth.received))),
         h('div', { class: 'grow right' }, h('div', { class: 'muted small' }, 'Still to receive'), h('div', { class: 'strong num', style: 'font-size:20px' }, money(st.thisMonth.expected))))));
 
-    // expected income by frequency
-    var rows = st.byFrequency.filter(function (b) { return b.count; }).map(function (b) {
-      var per = { 'Monthly': 'each month', 'Quarterly': 'each quarter', 'Half-Yearly': 'every 6 months', 'Annually': 'each year' }[b.frequency];
+    // expected interest income by interest type
+    var rows = st.byType.filter(function (b) { return b.count; }).map(function (b) {
       return h('tr', null,
-        h('td', null, h('div', { class: 'strong' }, b.frequency), h('div', { class: 'small muted' }, U.plural(b.count, 'deposit') + ' · ' + money(b.perPayout) + ' ' + per)),
-        h('td', { class: 'r' }, money(b.yearly), h('div', { class: 'small muted', style: 'font-weight:500' }, 'a year')));
+        h('td', null, h('div', { class: 'strong' }, b.type), h('div', { class: 'small muted' }, U.plural(b.count, 'deposit') + ' · ' + U.fmtMoneyShort(b.principal))),
+        h('td', { class: 'r' }, money(b.interest), h('div', { class: 'small muted', style: 'font-weight:500' }, 'interest')));
     });
     if (rows.length) {
-      rows.push(h('tr', { class: 'total' }, h('td', null, 'Expected income a year'), h('td', { class: 'r' }, money(st.yearlyIncome))));
-      body.push(h('div', { class: 'card' }, h('h2', null, 'Expected income by frequency'), h('table', { class: 'freq-table' }, h('tbody', null, rows))));
+      rows.push(h('tr', { class: 'total' }, h('td', null, 'Interest still to come'), h('td', { class: 'r' }, money(st.interestExpected))));
+      body.push(h('div', { class: 'card' }, h('h2', null, 'Expected interest income'), h('table', { class: 'freq-table' }, h('tbody', null, rows)),
+        h('div', { class: 'small muted mt-8' }, money(st.interest12) + ' of it is due in the next 12 months.')));
     }
 
     // maturing soon
@@ -501,7 +524,7 @@
       if (tab === 'closed') body.push(h('div', { class: 'muted small', style: 'margin:-4px 4px 10px' }, 'Closed deposits and all their payments are kept for your records.'));
       body.push(chunkedList(list, function (d) { return depositItem(d); }, 80));
     } else if (tab === 'active') {
-      body.push(h('div', { class: 'card' }, UI.empty('bank', depState.member ? 'No active deposits for this member' : 'No active deposits yet', 'Add a deposit and the app will work out every payment date.',
+      body.push(h('div', { class: 'card' }, UI.empty('bank', depState.member ? 'No active deposits for this member' : 'No active deposits yet', 'Add a deposit and the app works out its Mature Date, interest and reminders.',
         h('button', { class: 'btn primary', onclick: function () { app.nav.go('deposit-edit/new' + (depState.member ? '?member=' + depState.member : '')); } }, UI.icon('plus'), 'Add deposit'))));
     } else {
       body.push(h('div', { class: 'card' }, UI.empty('history', 'No closed deposits', 'When a deposit matures or is withdrawn, close it from its details page. Its history stays here.')));
@@ -518,7 +541,7 @@
   S.deposit = function (route) {
     var app = A(), data = D(), today = T(), dep = M.deposit(data, route.arg);
     if (!dep) return { title: 'Deposit', body: UI.empty('bank', 'Deposit not found', 'It may have been deleted.') };
-    var m = M.member(data, dep.memberId), sum = M.depositSummary(data, dep, today), body = [];
+    var m = M.member(data, dep.memberId), sum = M.depositSummary(data, dep, today), pos = M.position(dep, today), body = [];
 
     // hero
     var acctText = h('span', null, U.maskAccount(dep.accountNumber)), shown = false, hideTimer = null;
@@ -526,7 +549,7 @@
     eyeBtn.addEventListener('click', function () {
       if (shown) { hide(); return; }
       if (!dep.accountNumber) return;
-      app.verifyUser('Show the full account number').then(function (ok) {
+      app.verifyUser('Show the full deposit number').then(function (ok) {
         if (!ok) return;
         shown = true;
         acctText.textContent = dep.accountNumber;
@@ -545,74 +568,87 @@
     body.push(h('div', { class: 'hero-card' },
       h('div', { class: 'bank' }, dep.bank || 'Bank not set'),
       h('div', { class: 'big' }, money(dep.depositAmount)),
-      h('div', { class: 'acct' }, 'A/c ', acctText, dep.accountNumber ? eyeBtn : null),
+      h('div', { class: 'acct' }, 'Deposit No ', acctText, dep.accountNumber ? eyeBtn : null),
       h('div', { class: 'meta' },
         h('button', { class: 'who', onclick: function () { if (m) app.nav.go('member/' + m.id); } }, UI.icon('users', 'sm'), m ? m.name : 'Unknown'),
-        UI.statusChip(dep.status))));
+        h('span', { class: 'chip' }, 'S.No ' + dep.id + ' · ' + pos))));
 
-    if (!M.hasSchedule(dep)) {
-      body.push(UI.banner('', 'calendar', 'Payment dates are not set', 'Add the first payment date and payment frequency, and the app will create the schedule.',
+    if (!U.isValidISO(dep.maturityDate)) {
+      body.push(UI.banner('', 'calendar', 'Mature date is not set', 'Add the Deposit Date and No of Days (or the Mature Date).',
         h('button', { class: 'btn small primary', onclick: function () { app.nav.go('deposit-edit/' + dep.id); } }, 'Edit deposit')));
     }
-    if (dep.status === 'Active' && dep.maturityDate && dep.maturityDate < today) {
-      body.push(UI.banner('', 'clock', 'This deposit matured on ' + U.fmtDate(dep.maturityDate), 'If it was renewed or withdrawn, close it. Its history is kept.',
-        h('button', { class: 'btn small primary', onclick: function () { closeSheet(dep); } }, 'Close deposit')));
+    if (pos === 'Matured') {
+      body.push(UI.banner('', 'clock', 'Matured on ' + U.fmtDate(dep.maturityDate), 'Renew it, or close it if the money was withdrawn. Its history is kept either way.',
+        h('div', { class: 'btn-row' },
+          h('button', { class: 'btn small primary', onclick: function () { app.nav.go('deposit-edit/new?renew=' + dep.id); } }, 'Renew'),
+          h('button', { class: 'btn small outline', onclick: function () { closeSheet(dep); } }, 'Close'))));
     }
 
-    // overdue
+    // interest overdue
     if (sum.overdue.length) {
       var ol = h('div', { class: 'list', style: 'border:1.5px solid var(--danger-soft)' },
-        h('div', { class: 'list-head', style: 'background:var(--danger-soft);color:var(--danger)' }, h('span', null, U.plural(sum.overdue.length, 'payment') + ' overdue'), h('span', null, money(sum.overdueTotal))));
+        h('div', { class: 'list-head', style: 'background:var(--danger-soft);color:var(--danger)' }, h('span', null, 'Interest overdue'), h('span', null, money(sum.overdueTotal))));
       sum.overdue.forEach(function (p) { ol.appendChild(scheduleItem(p)); });
       body.push(ol);
     }
 
-    // next payment
-    if (sum.next) {
-      body.push(h('div', { class: 'card' }, h('h2', null, 'Next payment'),
-        h('div', { class: 'next-card' }, UI.dateBox(sum.next.dueDate, sum.next.dueDate === today ? 'today' : ''),
-          h('div', { class: 'grow' }, h('div', { class: 'when num' }, money(sum.next.expectedAmount)), h('div', { class: 'muted' }, U.fmtDate(sum.next.dueDate) + ' · ' + U.relLong(sum.next.dueDate, today))),
-          h('button', { class: 'recv-btn', onclick: function () { receiveSheet(sum.next.id); } }, UI.icon('check', 'sm'), 'Received'))));
+    // interest income
+    var income = sum.payments.filter(function (p) { return p.dueDate === dep.incomeDate; })[0];
+    if (income && income.status !== 'Overdue') {
+      var rec = income.status === 'Received';
+      body.push(h('div', { class: 'card' }, h('h2', null, 'Interest income'),
+        h('div', { class: 'next-card' }, UI.dateBox(income.dueDate, rec ? 'received' : (income.dueDate === today ? 'today' : '')),
+          h('div', { class: 'grow' },
+            h('div', { class: 'when num' }, money(rec ? income.receivedAmount : income.expectedAmount)),
+            h('div', { class: 'muted' }, rec ? 'Received ' + U.fmtDate(income.receivedDate) : 'Income Date ' + U.fmtDate(income.dueDate) + ' · ' + U.relLong(income.dueDate, today))),
+          rec ? h('button', { class: 'chip received', style: 'border:0', onclick: function () { paymentSheet(income.id); } }, 'Received')
+            : income.dueDate <= U.addDays(today, 30) ? h('button', { class: 'recv-btn', onclick: function () { receiveSheet(income.id); } }, UI.icon('check', 'sm'), 'Received')
+              : h('button', { class: 'chip pending', style: 'border:0', onclick: function () { receiveSheet(income.id); } }, 'Pending'))));
     }
 
-    // progress
-    if (M.hasSchedule(dep)) {
-      var prog = h('div', { class: 'card' }, h('h2', null, 'Payments received'),
-        h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:8px' },
-          h('div', { class: 'strong' }, sum.total ? sum.receivedCount + ' of ' + sum.total : String(sum.receivedCount)),
-          h('div', { class: 'strong num', style: 'color:var(--ok)' }, money(sum.receivedTotal) + ' so far')));
-      if (sum.total) prog.appendChild(h('div', { class: 'progress' }, h('span', { style: 'width:' + Math.min(100, Math.round(sum.receivedCount / sum.total * 100)) + '%' })));
-      body.push(prog);
+    // maturity
+    if (U.isValidISO(dep.maturityDate)) {
+      var atMaturity = (+dep.depositAmount || 0) + (dep.incomeDate === dep.maturityDate ? (+dep.interestAmount || 0) : 0);
+      var renewal = M.renewalDate(dep, today);
+      body.push(h('div', { class: 'card' }, h('h2', null, 'Maturity'),
+        h('div', { class: 'row', style: 'justify-content:space-between;align-items:flex-end' },
+          h('div', null, h('div', { class: 'strong', style: 'font-size:18px' }, U.fmtDate(dep.maturityDate)),
+            h('div', { class: 'muted small' }, dep.status === 'Closed' ? 'Closed' + (dep.closedDate ? ' on ' + U.fmtDate(dep.closedDate) : '')
+              : (dep.maturityDate >= today ? U.relLong(dep.maturityDate, today) : 'matured ' + U.relLong(dep.maturityDate, today)) + ' · ' + M.describeTerm(dep.days))),
+          h('div', { class: 'right' }, h('div', { class: 'muted small' }, 'Amount at maturity'), h('div', { class: 'strong num', style: 'font-size:18px' }, money(atMaturity)))),
+        dep.status === 'Active' && renewal ? h('div', { class: 'small muted mt-12' }, 'Next monthly renewal date: ', h('b', null, U.fmtDate(renewal))) : null,
+        dep.status === 'Active' && pos === 'Maturing Soon' ? h('button', { class: 'btn outline block mt-12', onclick: function () { app.nav.go('deposit-edit/new?renew=' + dep.id); } }, UI.icon('reopen', 'sm'), 'Renew at maturity') : null));
     }
 
-    // details
+    // details — the 16 columns of the sheet
     var rows = [
-      ['Family member', m ? m.name : '—'],
-      ['Village', dep.village || '—'],
-      ['Bank / institution', dep.bank || '—'],
-      ['Account number', U.maskAccount(dep.accountNumber)],
-      ['Deposit amount', money(dep.depositAmount)],
-      ['Interest rate', U.fmtRate(dep.interestRate)],
-      ['Payment amount', money(dep.paymentAmount) + (dep.frequency ? ' ' + dep.frequency.toLowerCase() : '')],
-      ['Start date', U.fmtDate(dep.startDate)],
-      ['First payment', U.fmtDate(dep.firstPaymentDate)],
-      ['Maturity date', dep.maturityDate ? U.fmtDate(dep.maturityDate) + (dep.status === 'Active' && dep.maturityDate >= today ? ' (' + U.relLong(dep.maturityDate, today) + ')' : '') : '—'],
+      ['S.No', dep.id],
+      ['Bank Name', dep.bank || '—'],
+      ['Deposit No', U.maskAccount(dep.accountNumber)],
+      ['Depositer Name', m ? m.name : '—'],
+      ['Interest type', dep.interestType],
+      ['Percentage', U.fmtRate(dep.interestRate)],
+      ['Deposit Value', money(dep.depositAmount)],
+      ['Deposit Date', U.fmtDate(dep.startDate)],
+      ['No of Days', dep.days ? dep.days + ' (' + M.describeTerm(dep.days) + ')' : '—'],
+      ['Mature Date', U.fmtDate(dep.maturityDate)],
+      ['Deposit position', pos],
+      ['Monthly Renewal Date', U.fmtDate(M.renewalDate(dep, today))],
+      ['Income Date', U.fmtDate(dep.incomeDate)],
+      ['Amount of Interest', money(dep.interestAmount)],
+      ['Deposited Village', dep.village || '—'],
       dep.status === 'Closed' ? ['Closed on', U.fmtDate(dep.closedDate)] : null,
-      ['Deposit ID', dep.id],
-      dep.notes ? ['Notes', dep.notes] : null
+      ['Remarks', dep.notes || '—']
     ].filter(Boolean);
     var kv = h('div', { class: 'kv' });
     rows.forEach(function (r) { kv.appendChild(h('div', { class: 'k' }, r[0])); kv.appendChild(h('div', { class: 'v' }, r[1])); });
     body.push(h('div', { class: 'card' }, h('h2', null, 'Details'), kv));
 
-    // schedule
-    if (sum.payments.length) {
-      body.push(sectionTitle('Payment schedule', h('span', { class: 'small muted', style: 'text-transform:none;letter-spacing:0' }, U.plural(sum.payments.length, 'row'))));
-      var sched = sum.payments.slice().sort(function (a, b) { return a.dueDate < b.dueDate ? 1 : -1; });
-      var upcomingFirst = sched.filter(function (p) { return p.dueDate >= today && p.status !== 'Received'; }).reverse()
-        .concat(sched.filter(function (p) { return !(p.dueDate >= today && p.status !== 'Received'); }));
-      body.push(chunkedList(upcomingFirst, scheduleItem, 24));
-      if (dep.status === 'Active' && !dep.maturityDate) body.push(h('div', { class: 'muted small', style: 'margin:-6px 4px 14px' }, 'No maturity date, so payment dates are kept 12 months ahead and added automatically.'));
+    // earlier income rows (e.g. history kept from before a change of dates)
+    var others = sum.payments.filter(function (p) { return p !== income && sum.overdue.indexOf(p) < 0; });
+    if (others.length) {
+      body.push(sectionTitle('Interest history'));
+      body.push(chunkedList(others.slice().sort(function (a, b) { return a.dueDate < b.dueDate ? 1 : -1; }), scheduleItem, 24));
     }
 
     // actions
@@ -621,10 +657,14 @@
       dep.status === 'Active'
         ? h('button', { class: 'btn outline', onclick: function () { closeSheet(dep); } }, UI.icon('close', 'sm'), 'Close deposit')
         : h('button', { class: 'btn outline', onclick: function () { reopen(dep); } }, UI.icon('reopen', 'sm'), 'Reopen'));
+    if (dep.status === 'Active' && pos === 'Active') {
+      body.push(acts);
+      acts = h('button', { class: 'link mt-12', onclick: function () { app.nav.go('deposit-edit/new?renew=' + dep.id); } }, 'Renew this deposit');
+    }
     body.push(acts);
     if (M.canDeleteDeposit(data, dep.id)) {
       body.push(h('button', { class: 'btn danger block mt-12', onclick: function () {
-        UI.confirm('Delete this deposit?', 'Use this only for a deposit added by mistake. It has no received payments, so nothing from the history is lost.', 'Delete', true).then(function (ok) {
+        UI.confirm('Delete this deposit?', 'Use this only for a deposit added by mistake. It has no received interest, so nothing from the history is lost.', 'Delete', true).then(function (ok) {
           if (!ok) return;
           M.deleteDeposit(data, dep.id);
           app.commit({ render: false });
@@ -633,7 +673,7 @@
         });
       } }, UI.icon('trash', 'sm'), 'Delete deposit'));
     }
-    return { title: m ? m.name + ' · ' + (dep.bank || 'Deposit') : 'Deposit', body: body };
+    return { title: (m ? m.name : 'Deposit') + ' · S.No ' + dep.id, body: body };
   };
 
   function closeSheet(dep) {
@@ -646,8 +686,10 @@
         var d = U.isValidISO(date.value) ? date.value : today;
         var f = M.paymentsOf(D(), dep.id).filter(function (p) { return p.status !== 'Received' && p.dueDate > d; }).length;
         var keep = M.paymentsOf(D(), dep.id).filter(function (p) { return p.status !== 'Received' && p.dueDate <= d; }).length;
-        info.textContent = 'All received payments are kept. ' + (f ? U.plural(f, 'scheduled payment') + ' after this date will be removed. ' : '') +
-          (keep ? U.plural(keep, 'unpaid payment') + ' due on or before this date will stay so you can still mark them received.' : '');
+        var early = U.isValidISO(dep.maturityDate) && d < dep.maturityDate;
+        info.textContent = 'Received interest is kept. ' + (f ? 'The interest due on ' + U.fmtDate(dep.incomeDate) + ' will be removed because the deposit closes before it. ' : '') +
+          (keep ? 'Unpaid interest due on or before this date stays, so you can still mark it received. ' : '') +
+          (early ? '"Closed early on …" is added to the Remarks so the date is kept in Excel.' : '');
       }
       date.addEventListener('change', upd);
       upd();
@@ -662,14 +704,14 @@
             var r = M.closeDeposit(D(), dep.id, date.value, today);
             app.commit();
             close();
-            UI.toast('Deposit closed' + (r.unpaidKept ? ' · ' + U.plural(r.unpaidKept, 'unpaid payment') + ' kept' : ''));
+            UI.toast('Deposit closed' + (r.unpaidKept ? ' · unpaid interest kept' : ''));
           } }, 'Close deposit'))
       ];
     });
   }
 
   function reopen(dep) {
-    UI.confirm('Reopen this deposit?', 'It becomes active again and upcoming payment dates are added back.', 'Reopen').then(function (ok) {
+    UI.confirm('Reopen this deposit?', 'It becomes active again and its interest income is tracked again.', 'Reopen').then(function (ok) {
       if (!ok) return;
       M.reopenDeposit(D(), dep.id, T());
       A().commit();
@@ -682,25 +724,32 @@
   S['deposit-edit'] = function (route) {
     var app = A(), data = D(), today = T(), isNew = route.arg === 'new' || !route.arg;
     var dep = isNew ? null : M.deposit(data, route.arg);
+    var renewFrom = isNew && route.query.renew ? M.deposit(data, route.query.renew) : null;
     if (!isNew && !dep) return { title: 'Edit deposit', body: UI.empty('bank', 'Deposit not found') };
     if (!data.members.length) {
       return {
         title: 'Add deposit', tabs: false,
-        body: h('div', { class: 'card' }, UI.empty('users', 'Add a family member first', 'Every deposit belongs to a family member.',
+        body: h('div', { class: 'card' }, UI.empty('users', 'Add a family member first', 'Every deposit belongs to a depositer.',
           h('button', { class: 'btn primary', onclick: function () { memberSheet(null, function () { app.render(); }); } }, UI.icon('plus'), 'Add family member')))
       };
     }
-    var f = dep ? U.clone(dep) : {
-      id: '', memberId: route.query.member || (data.members.length === 1 ? data.members[0].id : ''), village: '', bank: '', accountNumber: '',
-      depositAmount: '', interestRate: '', paymentAmount: '', frequency: '', startDate: '', firstPaymentDate: '', maturityDate: '', notes: ''
-    };
-    if (isNew && f.memberId) { var mm = M.member(data, f.memberId); f.village = mm ? mm.village : ''; }
+    var f;
+    if (dep) f = U.clone(dep);
+    else if (renewFrom) f = M.renewalDraft(renewFrom);
+    else {
+      f = {
+        id: '', memberId: route.query.member || (data.members.length === 1 ? data.members[0].id : ''), village: '', bank: '', accountNumber: '',
+        interestType: 'Simple', interestRate: '', depositAmount: '', startDate: today, days: '', maturityDate: '', incomeDate: '', interestAmount: '', notes: ''
+      };
+      if (f.memberId) { var mm = M.member(data, f.memberId); f.village = mm ? mm.village : ''; }
+    }
     var pastAs = 'received';
     var root = h('div');
+    var val = function (v) { return v === '' || v === undefined || v === null ? '' : String(v); };
 
-    // member
+    /* --- depositer */
     function memberOptions() {
-      return [{ value: '', label: 'Choose family member…' }].concat(data.members.slice().sort(function (a, b) { return a.name.localeCompare(b.name); })
+      return [{ value: '', label: 'Choose depositer…' }].concat(data.members.slice().sort(function (a, b) { return a.name.localeCompare(b.name); })
         .map(function (m) { return { value: m.id, label: m.name + (m.village ? ' — ' + m.village : '') }; }))
         .concat([{ value: '__new', label: '+ Add a new family member…' }]);
     }
@@ -724,119 +773,166 @@
       f.memberId = id;
       UI.setFieldError(root, 'memberId', '');
     }
-    var village = UI.input({ type: 'text', value: f.village || '', list: 'dl-v2', autocapitalize: 'words' });
-    var bank = UI.input({ type: 'text', value: f.bank || '', list: 'dl-banks', autocapitalize: 'words', placeholder: 'e.g. SBI Tambaram, Post Office' });
-    var acct = UI.input({ type: 'text', value: f.accountNumber || '', inputmode: 'text', autocapitalize: 'characters', placeholder: 'As in the passbook / receipt', spellcheck: 'false' });
+    var village = UI.input({ type: 'text', value: f.village || '', list: 'dl-v2', autocapitalize: 'words', placeholder: 'e.g. Tambaram' });
+    var bank = UI.input({ type: 'text', value: f.bank || '', list: 'dl-banks', autocapitalize: 'words', placeholder: 'e.g. SBI, Indian Bank, Post Office' });
+    var acct = UI.input({ type: 'text', value: f.accountNumber || '', inputmode: 'text', autocapitalize: 'characters', placeholder: 'e.g. SBI001245', spellcheck: 'false' });
     function acctHint() {
       var v = acct.value.replace(/\s+/g, '');
-      return v.length > 4 ? 'The app shows it as ' + U.maskAccount(v) + ' everywhere.' : 'The app only ever shows the last 4 digits, like XXXX4582.';
+      return v.length > 4 ? 'The app shows it as ' + U.maskAccount(v) + ' everywhere.' : 'The app only ever shows the last 4 characters, like XXXX1245.';
     }
     acct.addEventListener('input', function () { var hn = acct.parentNode && acct.parentNode.querySelector('.hint'); if (hn) hn.textContent = acctHint(); });
-    var amount = UI.moneyInput({ value: f.depositAmount === '' ? '' : String(f.depositAmount), placeholder: '0' });
-    var rateI = UI.input({ type: 'text', inputmode: 'decimal', value: f.interestRate === '' ? '' : String(f.interestRate), placeholder: 'e.g. 7.25' });
+
+    /* --- money */
+    var typeBtns = {};
+    var typePick = h('div', { class: 'freq-pick', role: 'radiogroup' });
+    M.INTEREST_TYPES.forEach(function (t) {
+      var b = h('button', {
+        type: 'button', class: f.interestType === t ? 'on' : '', role: 'radio', 'aria-checked': f.interestType === t ? 'true' : 'false',
+        onclick: function () {
+          f.interestType = t;
+          Object.keys(typeBtns).forEach(function (k) { typeBtns[k].classList.toggle('on', k === t); typeBtns[k].setAttribute('aria-checked', k === t ? 'true' : 'false'); });
+          UI.setFieldError(root, 'interestType', '');
+          refresh();
+        }
+      }, t);
+      typeBtns[t] = b;
+      typePick.appendChild(b);
+    });
+    var amount = UI.moneyInput({ value: val(f.depositAmount), placeholder: '0' });
+    var rateI = UI.input({ type: 'text', inputmode: 'decimal', value: val(f.interestRate), placeholder: 'e.g. 7.1' });
     var rateWrap = h('div', { class: 'input-wrap has-suffix' }, rateI, h('span', { class: 'suffix' }, '%'));
-    var pay = UI.moneyInput({ value: f.paymentAmount === '' ? '' : String(f.paymentAmount), placeholder: 'Interest received each time' });
-    var suggest = h('div', { class: 'quick' });
+
+    /* --- dates */
     var start = UI.input({ type: 'date', value: f.startDate || '' });
-    var first = UI.input({ type: 'date', value: f.firstPaymentDate || '' });
-    var firstQuick = h('div', { class: 'quick' });
+    var daysI = UI.input({ type: 'text', inputmode: 'numeric', value: val(f.days), placeholder: 'e.g. 365' });
+    var daysWrap = h('div', { class: 'input-wrap has-suffix' }, daysI, h('span', { class: 'suffix' }, 'days'));
+    var termQuick = h('div', { class: 'quick' });
+    M.TERMS.forEach(function (d) {
+      termQuick.appendChild(h('button', { type: 'button', onclick: function () { daysI.value = String(d); onDays(); } }, d + ' · ' + M.describeTerm(d)));
+    });
     var maturity = UI.input({ type: 'date', value: f.maturityDate || '' });
-    var matQuick = h('div', { class: 'quick' });
-    var notes = h('textarea', { class: 'input', rows: '2', placeholder: 'Anything useful — nominee, renewal plan…' });
-    notes.value = f.notes || '';
+    var income = UI.input({ type: 'date', value: f.incomeDate || f.maturityDate || '' });
+    var incomeSame = !f.incomeDate || f.incomeDate === f.maturityDate;
+    var sameBox = h('input', { type: 'checkbox', checked: incomeSame, style: 'width:20px;height:20px;margin:0' });
+    var sameRow = h('label', { class: 'check-row' }, sameBox, h('span', null, 'Same as the Mature Date'));
+    income.disabled = incomeSame;
+    sameBox.addEventListener('change', function () {
+      incomeSame = sameBox.checked;
+      income.disabled = incomeSame;
+      if (incomeSame) income.value = maturity.value;
+      refresh();
+    });
     var preview = h('div', { class: 'preview-dates', style: 'display:none' });
+
+    /* --- interest */
+    var interest = UI.moneyInput({ value: val(f.interestAmount), placeholder: 'Leave empty to calculate' });
+    var suggest = h('div', { class: 'quick' });
+    var notes = h('textarea', { class: 'input', rows: '2', placeholder: 'e.g. Auto renewal, Senior deposit, nominee…' });
+    notes.value = f.notes || '';
     var pastBox = h('div');
 
-    var freqBtns = {};
-    var freqPick = h('div', { class: 'freq-pick', role: 'radiogroup' });
-    M.FREQS.forEach(function (fr) {
-      var b = h('button', { type: 'button', class: f.frequency === fr ? 'on' : '', role: 'radio', 'aria-checked': f.frequency === fr ? 'true' : 'false',
-        onclick: function () { f.frequency = fr; Object.keys(freqBtns).forEach(function (k) { freqBtns[k].classList.toggle('on', k === fr); freqBtns[k].setAttribute('aria-checked', k === fr ? 'true' : 'false'); }); UI.setFieldError(root, 'frequency', ''); refresh(); } }, fr);
-      freqBtns[fr] = b;
-      freqPick.appendChild(b);
-    });
+    function onStart() {
+      var d = parseInt(daysI.value, 10);
+      if (U.isValidISO(start.value) && d > 0) maturity.value = U.addDays(start.value, d);
+      syncIncome();
+      refresh();
+    }
+    function onDays() {
+      var d = parseInt(daysI.value, 10);
+      if (U.isValidISO(start.value) && d > 0) maturity.value = U.addDays(start.value, d);
+      UI.setFieldError(root, 'days', '');
+      syncIncome();
+      refresh();
+    }
+    function onMaturity() {
+      if (U.isValidISO(start.value) && U.isValidISO(maturity.value)) {
+        var d = U.diffDays(start.value, maturity.value);
+        if (d > 0) daysI.value = String(d);
+      }
+      syncIncome();
+      refresh();
+    }
+    function syncIncome() { if (incomeSame) income.value = maturity.value; }
 
     function readForm() {
       return {
         id: f.id, memberId: memberSel.value === '__new' ? '' : memberSel.value, village: village.value, bank: bank.value, accountNumber: acct.value,
-        depositAmount: U.toNumber(amount.input.value), interestRate: rateI.value.trim() === '' ? '' : U.toNumber(rateI.value),
-        paymentAmount: pay.input.value.trim() === '' ? '' : U.toNumber(pay.input.value), frequency: f.frequency,
-        startDate: start.value, firstPaymentDate: first.value, maturityDate: maturity.value, notes: notes.value,
+        interestType: f.interestType, interestRate: rateI.value.trim() === '' ? '' : U.toNumber(rateI.value),
+        depositAmount: U.toNumber(amount.input.value), startDate: start.value,
+        days: daysI.value.trim() === '' ? '' : U.toNumber(daysI.value), maturityDate: maturity.value,
+        incomeDate: incomeSame ? maturity.value : income.value,
+        interestAmount: interest.input.value.trim() === '' ? '' : U.toNumber(interest.input.value), notes: notes.value,
         status: dep ? dep.status : 'Active', closedDate: dep ? dep.closedDate : ''
       };
     }
 
     function refresh() {
       var cur = readForm();
-      // suggested payment
+      // suggested interest, calculated the way the family's sheet does
       U.clear(suggest);
-      var sg = M.suggestPayment(cur.depositAmount, cur.interestRate, cur.frequency);
-      if (sg !== '' && +sg !== +cur.paymentAmount) {
-        suggest.appendChild(h('button', { type: 'button', onclick: function () { pay.input.value = String(sg); refresh(); } }, 'Use ' + money(sg) + ' (amount × rate)'));
+      var sg = M.suggestInterest(cur.depositAmount, cur.interestRate, cur.days);
+      if (sg !== '' && +sg !== +cur.interestAmount) {
+        suggest.appendChild(h('button', { type: 'button', onclick: function () { interest.input.value = String(sg); refresh(); } },
+          'Use ' + money(sg) + ' (value × ' + U.fmtRate(cur.interestRate) + ' × ' + M.tenureMonths(cur.days) + ' months ÷ 12)'));
       }
-      // first payment helpers
-      U.clear(firstQuick);
-      if (U.isValidISO(cur.startDate) && M.FREQ_MONTHS[cur.frequency]) {
-        var guess = U.addMonths(cur.startDate, M.FREQ_MONTHS[cur.frequency]);
-        if (guess !== cur.firstPaymentDate) firstQuick.appendChild(h('button', { type: 'button', onclick: function () { first.value = guess; refresh(); } }, U.fmtDate(guess) + ' (one period after start)'));
-      }
-      // maturity helpers
-      U.clear(matQuick);
-      var base = U.isValidISO(cur.startDate) ? cur.startDate : (U.isValidISO(cur.firstPaymentDate) ? cur.firstPaymentDate : '');
-      if (base) [1, 2, 3, 5].forEach(function (y) {
-        var d = U.addMonths(base, 12 * y);
-        matQuick.appendChild(h('button', { type: 'button', onclick: function () { maturity.value = d; refresh(); } }, y + (y === 1 ? ' year' : ' years')));
-      });
-      // preview of dates
-      var tmp = { frequency: cur.frequency, firstPaymentDate: cur.firstPaymentDate, maturityDate: cur.maturityDate, status: 'Active' };
-      if (M.hasSchedule(tmp)) {
-        var ds = M.dueDates(tmp, today, cur.maturityDate ? Infinity : 24).filter(function (d) { return d >= today; }).slice(0, 4);
-        var total = M.totalPayments(tmp);
+      // what the dates add up to
+      if (U.isValidISO(cur.maturityDate) && U.isValidISO(cur.startDate)) {
+        var probeDep = { status: 'Active', startDate: cur.startDate, maturityDate: cur.maturityDate };
+        var ren = M.renewalDate(probeDep, today);
         preview.style.display = '';
-        preview.textContent = (ds.length ? 'Next payment dates: ' + ds.map(U.fmtDateShort).join(', ') + (ds.length === 4 ? '…' : '') : 'All payment dates are in the past.') +
-          (total ? ' · ' + total + ' payments in total until maturity.' : '');
+        preview.textContent = 'Matures ' + U.fmtDate(cur.maturityDate) + ' (' + M.describeTerm(U.diffDays(cur.startDate, cur.maturityDate)) + ')' +
+          ' · position: ' + M.position(probeDep, today) + (ren && cur.maturityDate >= today ? ' · next monthly renewal date ' + U.fmtDate(ren) : '');
       } else preview.style.display = 'none';
-      // past dates question
+      // interest income that is already due
       U.clear(pastBox);
-      var probe = { id: f.id, frequency: cur.frequency, firstPaymentDate: cur.firstPaymentDate, maturityDate: cur.maturityDate, status: cur.status, closedDate: cur.closedDate };
+      var probe = { id: f.id, incomeDate: cur.incomeDate, status: cur.status, closedDate: cur.closedDate };
       var past = M.hasSchedule(probe) ? M.countPastDue(data, probe, today) : 0;
       if (past > 0) {
         var r1, r2;
         var pick = function (v) { pastAs = v; r1.classList.toggle('on', v === 'received'); r2.classList.toggle('on', v === 'pending'); };
         r1 = h('button', { type: 'button', class: 'radio-card' + (pastAs === 'received' ? ' on' : ''), onclick: function () { pick('received'); } }, h('span', { class: 'dot' }),
-          h('div', null, h('div', { class: 'rt' }, 'Already received'), h('div', { class: 'rd' }, 'Mark them received on their due dates.')));
+          h('div', null, h('div', { class: 'rt' }, 'Already received'), h('div', { class: 'rd' }, 'Record the interest as received on the Income Date.')));
         r2 = h('button', { type: 'button', class: 'radio-card' + (pastAs === 'pending' ? ' on' : ''), onclick: function () { pick('pending'); } }, h('span', { class: 'dot' }),
-          h('div', null, h('div', { class: 'rt' }, 'Not received yet'), h('div', { class: 'rd' }, 'Show them as overdue.')));
+          h('div', null, h('div', { class: 'rt' }, 'Not received yet'), h('div', { class: 'rd' }, 'Show it as overdue.')));
         pastBox.appendChild(h('div', { class: 'card', style: 'background:var(--warn-soft);box-shadow:none' },
-          h('div', { class: 'strong' }, U.plural(past, 'payment date') + ' before today'),
-          h('div', { class: 'small muted', style: 'margin:2px 0 10px' }, 'How should these be recorded?'), r1, r2));
+          h('div', { class: 'strong' }, 'The Income Date is before today'),
+          h('div', { class: 'small muted', style: 'margin:2px 0 10px' }, 'Has this interest been received?'), r1, r2));
       }
     }
 
-    [amount.input, rateI, pay.input].forEach(function (el) { el.addEventListener('input', refresh); });
-    [start, first, maturity].forEach(function (el) { el.addEventListener('change', refresh); el.addEventListener('input', refresh); });
+    [amount.input, rateI, interest.input].forEach(function (el) { el.addEventListener('input', refresh); });
+    daysI.addEventListener('input', onDays);
+    start.addEventListener('change', onStart); start.addEventListener('input', onStart);
+    maturity.addEventListener('change', onMaturity); maturity.addEventListener('input', onMaturity);
+    income.addEventListener('change', refresh); income.addEventListener('input', refresh);
+
+    var renewNote = renewFrom ? UI.banner('info', 'reopen', 'Renewing S.No ' + renewFrom.id + ' (' + depositLine(renewFrom) + ')',
+      'Saving adds this as a new deposit and closes S.No ' + renewFrom.id + ' on ' + U.fmtDate(renewFrom.maturityDate && renewFrom.maturityDate <= today ? renewFrom.maturityDate : today) +
+      '.' + (renewFrom.interestType === 'Cumulative' ? ' The interest is added to the Deposit Value because it is cumulative.' : '')) : null;
 
     U.append(root, [
+      renewNote,
       h('datalist', { id: 'dl-banks' }, M.banks(data).map(function (v) { return h('option', { value: v }); })),
       h('datalist', { id: 'dl-v2' }, M.villages(data).map(function (v) { return h('option', { value: v }); })),
       h('div', { class: 'card' },
-        UI.field('Family member', memberSel, { name: 'memberId' }),
-        UI.field('Village', village, { name: 'village', optional: true, hint: 'Filled in from the member; change it if this deposit is elsewhere.' }),
-        UI.field('Bank / institution', bank, { name: 'bank' }),
-        UI.field('Account number', acct, { name: 'accountNumber', optional: true, hint: acctHint() })),
+        UI.field('Depositer Name', memberSel, { name: 'memberId' }),
+        UI.field('Deposited Village', village, { name: 'village', optional: true, hint: 'Filled in from the member; change it if this deposit is elsewhere.' }),
+        UI.field('Bank Name', bank, { name: 'bank' }),
+        UI.field('Deposit No', acct, { name: 'accountNumber', optional: true, hint: acctHint() })),
       h('div', { class: 'card' },
-        UI.field('Deposit amount', amount.input, { name: 'depositAmount', wrap: amount.wrap }),
-        UI.field('Interest rate', rateI, { name: 'interestRate', wrap: rateWrap, optional: true }),
-        h('div', { class: 'field', dataset: { name: 'frequency' } }, h('div', { class: 'lbl' }, 'How often is interest paid?'), freqPick,
-          h('div', { class: 'error', style: 'display:none' })),
-        UI.field('Payment amount', pay.input, { name: 'paymentAmount', wrap: pay.wrap, extra: suggest, hint: 'The interest received each time. Leave empty to calculate it from amount × rate.' })),
+        h('div', { class: 'field', dataset: { name: 'interestType' } }, h('div', { class: 'lbl' }, 'Interest type'), typePick, h('div', { class: 'error', style: 'display:none' })),
+        UI.field('Deposit Value', amount.input, { name: 'depositAmount', wrap: amount.wrap }),
+        UI.field('Percentage', rateI, { name: 'interestRate', wrap: rateWrap, optional: true })),
       h('div', { class: 'card' },
-        UI.field('Start date', start, { name: 'startDate', optional: true }),
-        UI.field('First payment date', first, { name: 'firstPaymentDate', extra: firstQuick, hint: 'Every later payment date is worked out from this.' }),
+        UI.field('Deposit Date', start, { name: 'startDate' }),
+        UI.field('No of Days', daysI, { name: 'days', wrap: daysWrap, extra: termQuick, hint: 'Type the days, or pick the Mature Date below — the other one is filled in.' }),
+        UI.field('Mature Date', maturity, { name: 'maturityDate' }),
         preview,
-        h('div', { class: 'mt-16' }, UI.field('Maturity date', maturity, { name: 'maturityDate', optional: true, extra: matQuick }))),
+        h('div', { class: 'mt-16' }, UI.field('Income Date', income, { name: 'incomeDate', extra: sameRow, hint: 'When the interest is received.' }))),
+      h('div', { class: 'card' },
+        UI.field('Amount of Interest', interest.input, { name: 'interestAmount', wrap: interest.wrap, extra: suggest, hint: 'Interest for the whole term. Leave empty and the app calculates it.' })),
       pastBox,
-      h('div', { class: 'card' }, UI.field('Notes', notes, { name: 'notes', optional: true }))
+      h('div', { class: 'card' }, UI.field('Remarks', notes, { name: 'notes', optional: true }))
     ]);
     refresh();
 
@@ -844,33 +940,33 @@
       var cur = readForm();
       if (cur.depositAmount !== '' && isNaN(cur.depositAmount)) cur.depositAmount = '';
       var err = M.validateDeposit(cur);
-      if (cur.interestRate !== '' && isNaN(cur.interestRate)) err.interestRate = 'Enter a number, e.g. 7.25';
-      if (cur.paymentAmount !== '' && isNaN(cur.paymentAmount)) err.paymentAmount = 'Enter a valid amount';
-      ['memberId', 'bank', 'accountNumber', 'depositAmount', 'interestRate', 'paymentAmount', 'frequency', 'firstPaymentDate', 'maturityDate'].forEach(function (k) {
+      if (cur.interestRate !== '' && isNaN(cur.interestRate)) err.interestRate = 'Enter a number, e.g. 7.1';
+      if (cur.interestAmount !== '' && isNaN(cur.interestAmount)) err.interestAmount = 'Enter a valid amount';
+      if (!incomeSame && !U.isValidISO(cur.incomeDate)) err.incomeDate = 'Enter the Income Date, or tick "Same as the Mature Date"';
+      ['memberId', 'bank', 'accountNumber', 'interestType', 'depositAmount', 'interestRate', 'startDate', 'days', 'maturityDate', 'incomeDate', 'interestAmount'].forEach(function (k) {
         UI.setFieldError(root, k, err[k]);
       });
-      var keys = Object.keys(err);
-      if (keys.length) {
+      if (Object.keys(err).length) {
         var el = root.querySelector('.field.err');
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         UI.toast('Please check the highlighted fields');
         return;
       }
-      if (cur.paymentAmount === '' && M.suggestPayment(cur.depositAmount, cur.interestRate, cur.frequency) === '') cur.paymentAmount = 0;
-      var res = M.saveDeposit(data, cur, { today: today, pastAs: pastAs });
+      var res;
+      if (renewFrom) res = M.renewDeposit(data, renewFrom.id, cur, { today: today, pastAs: pastAs });
+      else res = M.saveDeposit(data, cur, { today: today, pastAs: pastAs });
       app.commit({ render: false });
       if (isNew) app.nav.replace('deposit/' + res.deposit.id); else app.nav.back();
-      var msg = isNew ? 'Deposit added' : 'Deposit saved';
-      if (res.created.length) msg += ' · ' + U.plural(res.created.length, 'payment date') + ' created';
-      UI.toast(msg);
+      UI.toast(renewFrom ? 'Renewed as S.No ' + res.deposit.id + ' · S.No ' + renewFrom.id + ' closed'
+        : (isNew ? 'Deposit added as S.No ' + res.deposit.id : 'Deposit saved') + ' · interest ' + money(res.deposit.interestAmount) + ' on ' + U.fmtDate(res.deposit.incomeDate));
       if (isNew) app.maybeAskNotifications();
     }
 
     return {
-      title: isNew ? 'Add deposit' : 'Edit deposit', body: root, tabs: false,
+      title: renewFrom ? 'Renew deposit' : (isNew ? 'Add deposit' : 'Edit S.No ' + dep.id), body: root, tabs: false,
       sticky: h('div', { class: 'sticky-actions' }, h('div', null,
         h('button', { class: 'btn outline', onclick: function () { if (!app.nav.back()) app.nav.tab('deposits'); } }, 'Cancel'),
-        h('button', { class: 'btn primary', onclick: save }, isNew ? 'Add deposit' : 'Save')))
+        h('button', { class: 'btn primary', onclick: save }, renewFrom ? 'Renew' : (isNew ? 'Add deposit' : 'Save'))))
     };
   };
 
@@ -897,7 +993,7 @@
       var overdue = M.openPayments(data, { before: today }).filter(byMember);
       var upcoming = M.openPayments(data, { from: today, to: to, activeOnly: true }).filter(byMember);
       if (!overdue.length && !upcoming.length) {
-        body.push(h('div', { class: 'card' }, UI.empty('check', 'Nothing due', data.deposits.length ? 'No payments due in this period.' : 'Add deposits to see their payment dates here.')));
+        body.push(h('div', { class: 'card' }, UI.empty('check', 'No interest due', data.deposits.length ? 'No interest is due in this period.' : 'Add deposits to see their Income Dates here.')));
       }
       if (overdue.length) {
         var ot = overdue.reduce(function (s, p) { return s + (+p.expectedAmount || 0); }, 0);
@@ -916,6 +1012,15 @@
         body.push(sectionTitle(g.t, h('span', { style: 'text-transform:none;letter-spacing:0' }, money(tot))));
         body.push(chunkedList(items, function (p) { return paymentItem(p); }, 60));
       });
+      // monthly renewal dates in the same period (the mature date itself is listed above with its interest)
+      var rTo = to || U.addDays(today, 90);
+      var renewals = M.renewalsBetween(data, today, rTo).filter(function (r) {
+        return r.date !== r.deposit.maturityDate && (!payState.member || r.deposit.memberId === payState.member);
+      });
+      if (renewals.length) {
+        body.push(sectionTitle('Monthly renewal dates', h('span', { style: 'text-transform:none;letter-spacing:0' }, U.plural(renewals.length, 'date'))));
+        body.push(chunkedList(renewals, renewalItem, 5));
+      }
     } else {
       var periods = [{ value: 'month', label: 'This month' }, { value: '3m', label: 'Last 3 months' }, { value: 'year', label: 'This year' }, { value: 'fy', label: 'This financial year' }, { value: 'all', label: 'All' }];
       body.push(UI.chipRow(periods, payState.period, function (v) { payState.period = v; app.render(); }));
@@ -928,10 +1033,10 @@
       var rec = data.payments.filter(function (p) { return p.status === 'Received' && (p.receivedDate || p.dueDate) >= from && byMember(p); })
         .sort(function (a, b) { var x = a.receivedDate || a.dueDate, z = b.receivedDate || b.dueDate; return x < z ? 1 : x > z ? -1 : (a.id < b.id ? 1 : -1); });
       if (!rec.length) {
-        body.push(h('div', { class: 'card' }, UI.empty('history', 'No received payments', 'Payments you mark as received appear here.')));
+        body.push(h('div', { class: 'card' }, UI.empty('history', 'No interest received yet', 'Interest you mark as received appears here.')));
       } else {
         var total = rec.reduce(function (s, p) { return s + (+p.receivedAmount || 0); }, 0);
-        body.push(h('div', { class: 'summary-line' }, h('span', null, U.plural(rec.length, 'payment') + ' received'), h('b', { class: 'num' }, money(total))));
+        body.push(h('div', { class: 'summary-line' }, h('span', null, U.plural(rec.length, 'interest payment') + ' received'), h('b', { class: 'num' }, money(total))));
         var monthTotals = {};
         rec.forEach(function (p) { var k = (p.receivedDate || p.dueDate).slice(0, 7); monthTotals[k] = (monthTotals[k] || 0) + (+p.receivedAmount || 0); });
         body.push(chunkedList(rec, function (p) { return paymentItem(p, { history: true, byReceived: true }); }, 60, function (cur, prev) {
@@ -984,7 +1089,7 @@
     if (!m) return { title: 'Member', body: UI.empty('users', 'Member not found') };
     var deps = M.depositsOf(data, m.id).slice(), act = deps.filter(function (d) { return d.status === 'Active'; }), clo = deps.filter(function (d) { return d.status === 'Closed'; });
     var principal = act.reduce(function (s, d) { return s + (+d.depositAmount || 0); }, 0);
-    var yearly = act.reduce(function (s, d) { var k = M.FREQ_MONTHS[d.frequency]; return s + (k ? (+d.paymentAmount || 0) * 12 / k : 0); }, 0);
+    var yearly = act.reduce(function (s, d) { return s + (+d.interestAmount || 0); }, 0);
     var received = 0;
     deps.forEach(function (d) { M.paymentsOf(data, d.id).forEach(function (p) { if (p.status === 'Received' && (p.receivedDate || '').slice(0, 4) === today.slice(0, 4)) received += +p.receivedAmount || 0; }); });
     var body = [
@@ -995,7 +1100,7 @@
         m.phone ? h('a', { class: 'btn outline block mt-16', href: 'tel:' + m.phone.replace(/[^\d+]/g, '') }, UI.icon('phone', 'sm'), 'Call ' + m.phone) : null),
       h('div', { class: 'stats' },
         h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Active principal'), h('div', { class: 'v' }, U.fmtMoneyShort(principal)), h('div', { class: 's' }, U.plural(act.length, 'deposit'))),
-        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Expected a year'), h('div', { class: 'v' }, U.fmtMoneyShort(yearly)), h('div', { class: 's' }, 'interest')),
+        h('div', { class: 'stat' }, h('div', { class: 'k' }, 'Interest (active)'), h('div', { class: 'v' }, U.fmtMoneyShort(yearly)), h('div', { class: 's' }, 'for the full terms')),
         h('div', { class: 'stat wide' }, h('div', { class: 'k' }, 'Received in ' + today.slice(0, 4)), h('div', { class: 'v', style: 'color:var(--ok)' }, money(received))))
     ];
     body.push(sectionTitle('Active deposits', linkBtn('+ Add', function () { app.nav.go('deposit-edit/new?member=' + m.id); })));
@@ -1021,35 +1126,43 @@
 
   /* ================================================================ search & filters */
 
-  var searchState = { q: '', status: 'All', frequency: '', memberId: '', village: '', bank: '', sort: 'member' };
+  function freshSearch() { return { q: '', status: 'All', interestType: '', memberId: '', village: '', bank: '', sort: 'member' }; }
+  var searchState = freshSearch();
 
   S.search = function (route) {
     var app = A(), data = D(), today = T();
-    var maturedOnly = route.query.maturedOnly === '1';
+    // links from the dashboard open the search with a position already chosen
+    if (route.query.position && M.POSITIONS.indexOf(route.query.position) >= 0 && !route.query.seen) {
+      searchState = freshSearch();
+      searchState.status = route.query.position;
+      searchState.sort = 'maturity';
+      app.nav.stack[app.nav.stack.length - 1].path = route.path + '&seen=1';
+    }
     var results = h('div');
-    var q = UI.input({ type: 'search', value: searchState.q, placeholder: 'Name, village, bank, last digits of account…', 'aria-label': 'Search', enterkeyhint: 'search' });
+    var q = UI.input({ type: 'search', value: searchState.q, placeholder: 'Name, village, bank, S.No, Deposit No…', 'aria-label': 'Search', enterkeyhint: 'search' });
     var clearBtn = h('button', { class: 'icon-btn clear', 'aria-label': 'Clear', onclick: function () { q.value = ''; searchState.q = ''; draw(); q.focus(); } }, UI.icon('x', 'sm'));
     q.addEventListener('input', U.debounce(function () { searchState.q = q.value; draw(); }, 150));
 
     function sel(key, options, label) {
-      var s = UI.select(options, searchState[key], { 'aria-label': label });
-      s.addEventListener('change', function () { searchState[key] = s.value; draw(); });
-      return s;
+      var el = UI.select(options, searchState[key], { 'aria-label': label });
+      el.addEventListener('change', function () { searchState[key] = el.value; draw(); });
+      return el;
     }
     var filters = h('div', { class: 'filters' },
-      sel('status', [{ value: 'All', label: 'Active & closed' }, { value: 'Active', label: 'Active only' }, { value: 'Closed', label: 'Closed only' }], 'Status'),
-      sel('frequency', [{ value: '', label: 'Any frequency' }].concat(M.FREQS), 'Frequency'),
-      sel('memberId', [{ value: '', label: 'All members' }].concat(data.members.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).map(function (m) { return { value: m.id, label: m.name }; })), 'Member'),
+      sel('status', [{ value: 'All', label: 'Any position' }, { value: 'Open', label: 'Open (not closed)' }]
+        .concat(M.POSITIONS.map(function (p) { return { value: p, label: p }; })), 'Deposit position'),
+      sel('interestType', [{ value: '', label: 'Any interest type' }].concat(M.INTEREST_TYPES), 'Interest type'),
+      sel('memberId', [{ value: '', label: 'All depositers' }].concat(data.members.slice().sort(function (a, b) { return a.name.localeCompare(b.name); }).map(function (m) { return { value: m.id, label: m.name }; })), 'Depositer'),
       sel('village', [{ value: '', label: 'All villages' }].concat(M.villages(data)), 'Village'),
       sel('bank', [{ value: '', label: 'All banks' }].concat(M.banks(data)), 'Bank'),
-      sel('sort', [{ value: 'member', label: 'Sort: member' }, { value: 'amount', label: 'Sort: amount' }, { value: 'maturity', label: 'Sort: maturity' }, { value: 'bank', label: 'Sort: bank' }, { value: 'newest', label: 'Sort: newest' }], 'Sort'));
+      sel('sort', [{ value: 'member', label: 'Sort: depositer' }, { value: 'sno', label: 'Sort: S.No' }, { value: 'maturity', label: 'Sort: mature date' },
+        { value: 'amount', label: 'Sort: deposit value' }, { value: 'bank', label: 'Sort: bank' }, { value: 'newest', label: 'Sort: newest' }], 'Sort'));
 
     function draw() {
       U.clear(results);
-      var list = M.searchDeposits(data, searchState);
-      if (maturedOnly) list = list.filter(function (d) { return d.status === 'Active' && d.maturityDate && d.maturityDate < today; });
+      var list = M.searchDeposits(data, searchState, today);
       var qq = U.str(searchState.q).toLowerCase();
-      if (qq && !maturedOnly) {
+      if (qq) {
         var mems = data.members.filter(function (m) { return (m.name + ' ' + m.village + ' ' + m.phone).toLowerCase().indexOf(qq) >= 0; });
         if (mems.length) {
           results.appendChild(sectionTitle('Family members'));
@@ -1062,18 +1175,16 @@
           results.appendChild(ml);
         }
       }
-      var total = list.reduce(function (s, d) { return s + (+d.depositAmount || 0); }, 0);
-      results.appendChild(sectionTitle(maturedOnly ? 'Matured, still active' : 'Deposits', h('span', { style: 'text-transform:none;letter-spacing:0' }, list.length + ' · ' + money(total))));
+      var total = list.reduce(function (sum, d) { return sum + (+d.depositAmount || 0); }, 0);
+      results.appendChild(sectionTitle('Deposits', h('span', { style: 'text-transform:none;letter-spacing:0' }, list.length + ' · ' + money(total))));
       if (list.length) results.appendChild(chunkedList(list, function (d) { return depositItem(d); }, 60));
       else results.appendChild(h('div', { class: 'card muted' }, 'No deposits match.'));
     }
     draw();
-    var body = [h('div', { class: 'search-box' }, UI.icon('search'), q, clearBtn), maturedOnly ? null : filters,
-      maturedOnly ? null : h('div', { style: 'margin:-4px 0 6px;text-align:right' }, linkBtn('Reset filters', function () {
-        searchState = { q: '', status: 'All', frequency: '', memberId: '', village: '', bank: '', sort: 'member' };
-        app.render();
-      })), results];
-    return { title: maturedOnly ? 'Matured deposits' : 'Search & filters', body: body, after: function () { if (!searchState.q) q.focus(); } };
+    var body = [h('div', { class: 'search-box' }, UI.icon('search'), q, clearBtn), filters,
+      h('div', { style: 'margin:-4px 0 6px;text-align:right' }, linkBtn('Reset filters', function () { searchState = freshSearch(); app.render(); })), results];
+    return { title: searchState.status !== 'All' && searchState.status !== 'Open' ? searchState.status : 'Search & filters', body: body,
+      after: function () { if (!searchState.q && searchState.status === 'All') q.focus(); } };
   };
 
   /* ================================================================ settings */
@@ -1159,7 +1270,7 @@
     // Reminders
     var n = prefs.notify, rem = h('div', { class: 'card' }, h('h2', null, 'Reminders'));
     rem.appendChild(UI.switchRow('Payment & maturity reminders',
-      P.notify.mode === 'phone' ? 'Phone notifications, even when the app is closed.' : 'Shown when the app is open in this browser. The Android app notifies even when closed.',
+      P.notify.mode === 'phone' ? 'Phone notifications for maturity and interest, even when the app is closed.' : 'Shown when the app is open in this browser. The Android app notifies even when closed.',
       n.enabled, function (v) {
         n.enabled = v;
         app.savePrefs();
@@ -1197,10 +1308,15 @@
         return row;
       }
       var lbl = function (d) { return d === 0 ? 'On the day' : d === 1 ? '1 day before' : d + ' days before'; };
-      rem.appendChild(h('div', { class: 'strong mt-12' }, 'Before each payment'));
-      rem.appendChild(dayChips('paymentDays', [7, 3, 1, 0], lbl));
-      rem.appendChild(h('div', { class: 'strong' }, 'Before a deposit matures'));
+      if (!Array.isArray(n.renewalDays)) n.renewalDays = [];
+      rem.appendChild(h('div', { class: 'strong mt-12' }, 'Before a deposit matures'));
       rem.appendChild(dayChips('maturityDays', [30, 7, 1, 0], lbl));
+      rem.appendChild(h('div', { class: 'strong' }, 'Before an Income Date'));
+      rem.appendChild(h('div', { class: 'small muted', style: 'margin:-2px 0 6px' }, 'When the interest comes on the Mature Date, one reminder covers both.'));
+      rem.appendChild(dayChips('paymentDays', [7, 3, 1, 0], lbl));
+      rem.appendChild(h('div', { class: 'strong' }, 'Monthly renewal dates'));
+      rem.appendChild(h('div', { class: 'small muted', style: 'margin:-2px 0 6px' }, 'Off unless you pick one — one reminder per deposit every month.'));
+      rem.appendChild(dayChips('renewalDays', [1, 0], lbl));
       if (P.notify.mode === 'phone') {
         rem.appendChild(h('button', { class: 'btn outline block', onclick: function () {
           P.notify.show('Deposit Manager', 'Reminders are working. You will be notified at ' + (n.time || '09:00') + ' on reminder days.', 'test');
@@ -1240,7 +1356,7 @@
         prefs.secureScreen = v; app.savePrefs(); P.device.setSecure(v);
       }));
     }
-    sec.appendChild(h('div', { class: 'small muted mt-12' }, 'Account numbers are always shown as XXXX1234. Tap Show on a deposit to see the full number' + (L.enabled ? ' (asks for your PIN).' : '.')));
+    sec.appendChild(h('div', { class: 'small muted mt-12' }, 'Deposit numbers are always shown as XXXX1234. Tap Show on a deposit to see the full number' + (L.enabled ? ' (asks for your PIN).' : '.')));
     body.push(sec);
 
     // Appearance
@@ -1256,7 +1372,7 @@
       h('div', { class: 'kv' },
         h('div', { class: 'k' }, 'Family members'), h('div', { class: 'v' }, String(data.members.length)),
         h('div', { class: 'k' }, 'Deposits'), h('div', { class: 'v' }, data.deposits.length + ' (' + data.deposits.filter(function (d) { return d.status === 'Closed'; }).length + ' closed)'),
-        h('div', { class: 'k' }, 'Payment rows'), h('div', { class: 'v' }, String(data.payments.length))),
+        h('div', { class: 'k' }, 'Interest rows'), h('div', { class: 'v' }, String(data.payments.length))),
       h('div', { class: 'stack mt-12' },
         h('button', { class: 'btn outline block', onclick: function () { app.nav.go('search'); } }, UI.icon('search', 'sm'), 'Search & filter deposits'),
         bk ? h('button', { class: 'btn outline block', onclick: function () { app.restoreBackup(); } }, UI.icon('history', 'sm'), 'Restore previous data') : null,

@@ -230,10 +230,9 @@
           (prep.warnings.length ? ' ' + prep.warnings.slice(0, 3).join(' ') : '');
         return UI.alert('Nothing to import', msg).then(function () { return false; });
       }
-      var known = ['familymembers', 'familymember', 'members', 'member', 'family', 'deposits', 'deposit', 'fds', 'fd', 'fixeddeposits',
-        'fixeddeposit', 'payments', 'payment', 'payouts', 'interestpayments', 'notifications', 'instructions'];
+      // Sheets the app did not read would be lost when it saves into this file.
       prep.otherSheets = book.sheets.filter(function (s) {
-        return known.indexOf(U.normKey(s.name)) < 0 && s.rows.some(function (r) { return r && r.length; });
+        return (prep.usedSheets || []).indexOf(s.name) < 0 && s.rows.some(function (r) { return r && r.length; });
       }).map(function (s) { return s.name; });
       return DM.screens.importPreview(prep, opened, o).then(function (choice) {
         if (!choice) return false;

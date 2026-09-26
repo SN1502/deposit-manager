@@ -63,8 +63,8 @@
   var STYLES_XML = XML_HEAD +
     '<styleSheet xmlns="' + NS_MAIN + '">' +
     '<numFmts count="3">' +
-    '<numFmt numFmtId="164" formatCode="dd\\-mmm\\-yyyy"/>' +
-    '<numFmt numFmtId="165" formatCode="#,##0.00"/>' +
+    '<numFmt numFmtId="164" formatCode="dd\\-mm\\-yyyy"/>' +
+    '<numFmt numFmtId="165" formatCode="&quot;₹&quot;#,##0.00"/>' +
     '<numFmt numFmtId="166" formatCode="0.00"/>' +
     '</numFmts>' +
     '<fonts count="3">' +

@@ -231,7 +231,8 @@
   }
 
   function statusChip(status) {
-    var cls = { Pending: 'pending', Received: 'received', Overdue: 'overdue', Active: 'active', Closed: 'closed' }[status] || '';
+    var cls = { Pending: 'pending', Received: 'received', Overdue: 'overdue', Active: 'active', Closed: 'closed',
+      'Maturing Soon': 'warn', Matured: 'overdue' }[status] || '';
     return h('span', { class: 'chip ' + cls }, status);
   }
 

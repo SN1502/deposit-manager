@@ -1,11 +1,13 @@
-// Engine tests: schedule generation, statuses, reminders, stats, Excel write/read round trip.
-// Run: node tests/engine.test.js
+// Engine tests for the 16-column deposit model: import of the family's workbook, derived columns,
+// income tracking, reminders, stats, renewal, and the Excel round trip.
+// Run: PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node tests/engine.test.js
 const { chromium } = require('/opt/node22/lib/node_modules/playwright');
 const path = require('path');
 const fs = require('fs');
 
 const SRC = path.join(__dirname, '..', 'src', 'js');
 const OUT = path.join(__dirname, 'out');
+const FIXTURE = fs.readFileSync(path.join(__dirname, 'fixtures', 'family-16-columns.xlsx')).toString('base64');
 fs.mkdirSync(OUT, { recursive: true });
 
 (async () => {
@@ -13,138 +15,144 @@ fs.mkdirSync(OUT, { recursive: true });
   const page = await browser.newPage();
   page.on('pageerror', e => console.error('PAGE ERROR', e));
   await page.setContent('<!doctype html><html><body></body></html>');
-  for (const f of ['vendor-jszip.min.js', 'core.js', 'xlsx.js', 'data.js']) {
-    await page.addScriptTag({ path: path.join(SRC, f) });
-  }
+  for (const f of ['vendor-jszip.min.js', 'core.js', 'xlsx.js', 'data.js']) await page.addScriptTag({ path: path.join(SRC, f) });
 
-  const result = await page.evaluate(async () => {
-    const U = DM.util, M = DM.model, fails = [], log = [];
+  const result = await page.evaluate(async (fixtureB64) => {
+    const U = DM.util, M = DM.model, fails = [];
     const eq = (a, b, msg) => { const A = JSON.stringify(a), B = JSON.stringify(b); if (A !== B) fails.push(msg + '\n   got ' + A + '\n   exp ' + B); };
     const ok = (c, msg) => { if (!c) fails.push(msg); };
-
-    // --- date helpers
-    eq(U.addMonths('2026-01-31', 1, 31), '2026-02-28', 'month-end clamp');
-    eq(U.addMonths('2026-01-31', 2, 31), '2026-03-31', 'anchor restored');
-    eq(U.addMonths('2026-09-20', 3), '2026-12-20', 'quarter');
-    eq(U.addMonths('2026-11-20', 3), '2027-02-20', 'year wrap');
-    eq(U.parseFlexibleDate('20-09-2026'), '2026-09-20', 'dd-mm-yyyy');
-    eq(U.parseFlexibleDate('20/9/26'), '2026-09-20', 'dd/m/yy');
-    eq(U.parseFlexibleDate('20-Sep-2026'), '2026-09-20', 'dd-mmm-yyyy');
-    eq(U.parseFlexibleDate('20 September 2026'), '2026-09-20', 'long month');
-    eq(U.parseFlexibleDate('Sep 20, 2026'), '2026-09-20', 'us style');
-    eq(U.parseFlexibleDate('2026-09-20'), '2026-09-20', 'iso');
-    eq(U.parseFlexibleDate('31-02-2026'), null, 'invalid date rejected');
-    eq(U.toNumber('₹ 1,00,000.50'), 100000.5, 'indian number');
-    eq(U.toNumber('7.5%'), 7.5, 'percent');
-    eq(U.fmtMoney(100000), '₹1,00,000', 'money format');
-    eq(U.fmtMoney(1812.5), '₹1,812.50', 'money decimals');
-    eq(U.maskAccount('30012344582'), 'XXXX4582', 'mask');
-    eq(M.parseFrequency('Half yearly'), 'Half-Yearly', 'freq hy');
-    eq(M.parseFrequency('qtrly'), 'Quarterly', 'freq q');
-    eq(M.parseFrequency('Annual'), 'Annually', 'freq a');
-
-    // --- schedule examples from the spec
     const today = '2026-09-26';
-    const mk = (freq, first, maturity) => ({ id: 'X', frequency: freq, firstPaymentDate: first, maturityDate: maturity || '', status: 'Active' });
-    eq(M.dueDates(mk('Monthly', '2026-09-20'), today).slice(0, 3), ['2026-09-20', '2026-10-20', '2026-11-20'], 'monthly example');
-    eq(M.dueDates(mk('Quarterly', '2026-09-20'), today).slice(0, 3), ['2026-09-20', '2026-12-20', '2027-03-20'], 'quarterly example');
-    eq(M.dueDates(mk('Half-Yearly', '2026-09-20'), today).slice(0, 2), ['2026-09-20', '2027-03-20'], 'half-yearly example');
-    eq(M.dueDates(mk('Annually', '2026-09-20'), today).slice(0, 2), ['2026-09-20', '2027-09-20'], 'annual example');
-    eq(M.dueDates(mk('Quarterly', '2026-09-20', '2027-03-20'), today), ['2026-09-20', '2026-12-20', '2027-03-20'], 'stops at maturity (inclusive)');
-    eq(M.totalPayments(mk('Monthly', '2026-10-01', '2031-09-01')), 60, '5-year monthly count');
-    eq(M.dueDates(mk('Monthly', '2026-10-01'), today).length, 12, 'rolling 12-month horizon without maturity');
 
-    // --- full flow
-    const data = M.emptyData();
-    const m1 = M.saveMember(data, { name: 'Lakshmi', village: 'Tambaram', phone: '9876543210' });
-    const m2 = M.saveMember(data, { name: 'Ravi', village: 'Chromepet', phone: '' });
-    eq([m1.id, m2.id], ['M001', 'M002'], 'member ids');
-    ok(Object.keys(M.validateMember(data, { name: 'lakshmi', village: 'TAMBARAM' })).length === 1, 'duplicate member rejected');
+    /* ---------- helpers */
+    eq(M.parseInterestType('cumulative'), 'Cumulative', 'interest type cumulative');
+    eq(M.parseInterestType('Non-Cumulative'), 'Simple', 'non-cumulative → Simple');
+    eq(M.parseDepositStatus('Maturing Soon'), 'Active', 'Maturing Soon is still open');
+    eq(M.parseDepositStatus('Closed'), 'Closed', 'Closed');
+    eq([180, 270, 365, 730].map(M.tenureMonths), [6, 9, 12, 24], 'tenure months');
+    eq(M.suggestInterest(40000, 6.75, 180), 1350, 'interest 180 days like the sheet');
+    eq(M.suggestInterest(90000, 7, 270), 4725, 'interest 270 days like the sheet');
+    eq(M.suggestInterest(200000, 7, 730), 28000, 'interest 730 days like the sheet');
+    eq(M.resolveTerm('2026-06-01', 180, ''), { start: '2026-06-01', days: 180, maturity: '2026-11-28' }, 'days → mature date');
+    eq(M.resolveTerm('2026-01-05', '', '2028-01-05').days, 730, 'mature date → days');
 
-    const f1 = { memberId: 'M001', bank: 'SBI Tambaram', accountNumber: '30012344582', depositAmount: '100000', interestRate: '7.25',
-      paymentAmount: '', frequency: 'Quarterly', startDate: '2026-03-20', firstPaymentDate: '2026-06-20', maturityDate: '2028-03-20', notes: '' };
-    eq(M.validateDeposit(f1), {}, 'valid deposit');
-    eq(M.countPastDue(data, f1, today), 2, 'past dues before today (Jun + Sep)');
-    const r1 = M.saveDeposit(data, f1, { today, pastAs: 'received' });
-    eq(r1.deposit.id, 'D001', 'deposit id');
-    eq(r1.deposit.paymentAmount, 1812.5, 'payment auto-calculated 100000*7.25%/4');
-    eq(r1.autoReceived, 2, 'two past payments auto-received');
-    const ps1 = M.paymentsOf(data, 'D001').map(p => p.dueDate + ':' + p.status);
-    eq(ps1, ['2026-06-20:Received', '2026-09-20:Received', '2026-12-20:Pending', '2027-03-20:Pending', '2027-06-20:Pending',
-      '2027-09-20:Pending'], 'rolling schedule rows (12 months ahead)');
-
-    const f2 = { memberId: 'M002', bank: 'Indian Bank', accountNumber: '0045678912', depositAmount: '50000', interestRate: '7',
-      paymentAmount: '291.67', frequency: 'Monthly', startDate: '2026-08-05', firstPaymentDate: '2026-09-05', maturityDate: '2027-02-05', notes: 'Joint with wife' };
-    M.saveDeposit(data, f2, { today, pastAs: 'pending' });
-    const d2 = M.paymentsOf(data, 'D002');
-    eq(d2.map(p => p.status), ['Overdue', 'Pending', 'Pending', 'Pending', 'Pending', 'Pending'], 'monthly with overdue first');
-    eq(M.nextPayment(data, 'D002', today).dueDate, '2026-10-05', 'next payment');
-
-    // mark received -> next date
-    const nxt = M.markReceived(data, d2[0].id, { amount: '291.67', date: '2026-09-25' }, today);
-    eq(nxt.dueDate, '2026-10-05', 'next after receiving');
-    eq(M.payment(data, d2[0].id).status, 'Received', 'marked received');
-    M.markNotReceived(data, d2[0].id, today);
-    eq(M.payment(data, d2[0].id).status, 'Overdue', 'undo receive -> overdue again');
-    M.markReceived(data, d2[0].id, {}, today);
-
-    // edit schedule: change frequency -> unreceived rows replaced, received kept
-    const f1b = Object.assign({}, f1, { id: 'D001', frequency: 'Half-Yearly', paymentAmount: '3625' });
-    M.saveDeposit(data, f1b, { today });
-    eq(M.paymentsOf(data, 'D001').map(p => p.dueDate + ':' + p.status + ':' + p.expectedAmount),
-      ['2026-06-20:Received:1812.5', '2026-09-20:Received:1812.5', '2026-12-20:Pending:3625', '2027-06-20:Pending:3625'],
-      'reschedule keeps received history, replaces pending');
-
-    // stats
-    const st = M.computeStats(data, today);
-    eq([st.members, st.active, st.closed, st.principal], [2, 2, 0, 150000], 'stats basics');
-    eq(st.byFrequency.find(b => b.frequency === 'Monthly').yearly, 3500.04, 'monthly yearly income');
-    eq(st.byFrequency.find(b => b.frequency === 'Half-Yearly').yearly, 7250, 'half-yearly yearly income');
-    eq(st.upcoming30, { count: 1, amount: 291.67 }, 'upcoming 30 days');
-
-    // reminders
-    const rem = M.buildReminders(data, M.DEFAULT_PREFS, today, 60);
-    const oct5 = rem.filter(r => r.eventDate === '2026-10-05').map(r => r.notifyOn + '/' + r.daysBefore);
-    eq(oct5, ['2026-09-28/7', '2026-10-02/3', '2026-10-04/1', '2026-10-05/0'], 'payment reminders 7/3/1/0');
-    ok(rem.every(r => r.message.indexOf('0045678912') < 0 && r.message.indexOf('30012344582') < 0), 'reminders never show full account numbers');
-    const mat = M.buildReminders(data, M.DEFAULT_PREFS, '2027-01-01', 60).filter(r => r.type === 'Maturity').map(r => r.notifyOn + '/' + r.daysBefore);
-    eq(mat, ['2027-01-06/30', '2027-01-29/7', '2027-02-04/1', '2027-02-05/0'], 'maturity reminders');
-
-    // close keeps history, drops future unpaid
-    const cl = M.closeDeposit(data, 'D002', '2026-10-10', today);
-    eq(M.paymentsOf(data, 'D002').map(p => p.dueDate + ':' + p.status), ['2026-09-05:Received', '2026-10-05:Pending'], 'close keeps history & due before close');
-    eq(M.computeStats(data, today).closed, 1, 'closed count');
-    ok(!M.canDeleteDeposit(data, 'D002'), 'cannot delete deposit with received payments');
-    M.reopenDeposit(data, 'D002', today);
-    eq(M.paymentsOf(data, 'D002').length, 6, 'reopen regenerates');
-    M.closeDeposit(data, 'D002', '2026-10-10', today);
-
-    // search
-    eq(M.searchDeposits(data, { q: '4582' }).map(d => d.id), ['D001'], 'search by last digits');
-    eq(M.searchDeposits(data, { q: 'ravi' }).map(d => d.id), ['D002'], 'search by name');
-    eq(M.searchDeposits(data, { status: 'Active' }).map(d => d.id), ['D001'], 'filter status');
-
-    // --- Excel round trip
-    const sheets = M.workbookSheets(data, M.DEFAULT_PREFS, today);
-    const bytes = await DM.xlsx.write(sheets);
-    window.__xlsx = U.bytesToBase64(bytes);
-    const book = await DM.xlsx.read(bytes);
-    eq(book.sheets.map(s => s.name), ['FamilyMembers', 'Deposits', 'Payments', 'Notifications'], 'sheet names');
+    /* ---------- import the family's own workbook */
+    const book = await DM.xlsx.read(U.base64ToBytes(fixtureB64));
     const prep = M.prepareImport(book, today);
     eq(prep.errors, [], 'no import errors');
-    eq(prep.warnings, [], 'no import warnings on own file');
-    eq(prep.pastCount, 0, 'nothing new in the past');
+    eq(prep.counts.deposits, 20, '20 deposits read');
+    eq(prep.counts.membersAdded, 20, '20 depositers become family members');
+    eq(prep.warnings, ['20 family members created from the Depositer Name column.'], 'only an informational note');
+    eq(prep.usedSheets, ['Deposit Test Data'], 'deposits found on "Deposit Test Data" by its headings');
+    eq(prep.pastCount, 2, 'two income dates already passed (the closed deposits)');
     const fin = M.finalizeImport(prep, 'received', today);
-    const strip = d => JSON.stringify({ m: d.members, d: d.deposits, p: d.payments.slice().sort((a, b) => a.id < b.id ? -1 : 1) });
-    const orig = M.normalizeData(JSON.parse(JSON.stringify(data)));
-    eq(strip(fin.data), strip(orig), 'round trip identical');
-    eq(fin.data.deposits[1].accountNumber, '0045678912', 'leading zero kept');
+    const data = fin.data;
+    const dep = n => data.deposits.find(d => d.id === String(n));
+    const d1 = dep(1);
+    eq([d1.bank, d1.accountNumber, M.memberName(data, d1.memberId), d1.interestType, d1.interestRate, d1.depositAmount, d1.startDate, d1.days,
+      d1.maturityDate, d1.status, d1.incomeDate, d1.interestAmount, d1.village, d1.notes],
+      ['SBI', 'SBI001245', 'Arun Kumar', 'Simple', 7.1, 50000, '2026-01-15', 365, '2027-01-15', 'Active', '2027-01-15', 3550, 'Mudichur', 'Regular deposit'],
+      'row 1 read exactly');
+    eq([dep(4).interestType, dep(6).days, dep(6).maturityDate, dep(6).interestAmount], ['Cumulative', 180, '2026-11-28', 1350], 'rows 4 and 6');
+    eq([dep(11).status, dep(11).closedDate, dep(12).status], ['Closed', '2026-09-30', 'Closed'], 'closed deposits closed on their mature date');
+    eq(M.paymentsOf(data, '11').map(p => p.status), ['Received'], 'closed deposit interest recorded as received');
+    eq(M.paymentsOf(data, '1').map(p => p.dueDate + ':' + p.expectedAmount + ':' + p.status), ['2027-01-15:3550:Pending'], 'one income row on the Income Date');
 
-    // template
+    /* ---------- derived columns match the sheet */
+    const pos = {};
+    data.deposits.forEach(d => { pos[d.id] = M.position(d, today); });
+    eq(['7', '9', '19'].map(k => pos[k]), ['Maturing Soon', 'Maturing Soon', 'Maturing Soon'], 'Maturing Soon rows as in the sheet');
+    eq(['11', '12'].map(k => pos[k]), ['Closed', 'Closed'], 'Closed rows as in the sheet');
+    eq(Object.values(pos).filter(p => p === 'Active').length, 15, '15 Active as in the sheet');
+    const sheetRenewal = { 1: '2026-10-15', 3: '2026-10-05', 4: '2026-10-20', 5: '2026-10-25', 6: '2026-10-01', 7: '2026-10-12', 8: '2026-10-08',
+      10: '2026-10-28', 11: '2026-09-30', 12: '2026-08-15', 13: '2026-10-22', 14: '2026-10-10', 15: '2026-10-05', 16: '2026-10-20',
+      17: '2026-10-01', 18: '2026-10-12', 19: '2026-10-25', 20: '2026-10-02' };
+    // The sheet looks filled in on ~29 Sep: on that day the rule reproduces every row except 2 and 9.
+    const mism = Object.keys(sheetRenewal).filter(k => M.renewalDate(dep(k), '2026-09-29') !== sheetRenewal[k]);
+    eq(mism, [], 'monthly Renewal Date matches the sheet for 18 of 20 rows');
+    eq([M.renewalDate(dep(2), today), M.renewalDate(dep(9), today)], ['2026-10-10', '2026-10-15'], 'rows 2 and 9: next 10th; capped at the 15 Oct mature date');
+    eq(M.renewalDate(dep(10), today), '2026-09-28', 'on 26 Sep the next 28th is 28 Sep');
+
+    /* ---------- stats */
+    const st = M.computeStats(data, today);
+    eq([st.members, st.active, st.closed], [20, 18, 2], 'stats counts');
+    eq(st.principal, 1505000, 'principal of the 18 open deposits');
+    eq(st.maturingSoon.map(d => d.id), ['7', '9', '19'], 'maturing soon list');
+    eq(st.byType.map(b => b.type + ':' + b.count), ['Simple:12', 'Cumulative:6'], 'by interest type');
+    eq(st.upcoming30, { count: 3, amount: 22125 }, 'interest due in the next 30 days (12, 15 and 25 Oct)');
+
+    /* ---------- reminders: maturity and interest on the same day are told together */
+    const rem = M.buildReminders(data, M.DEFAULT_PREFS, today, 60);
+    const r7 = rem.filter(r => r.depositId === '7').map(r => r.type + '/' + r.daysBefore + '/' + r.notifyOn);
+    eq(r7, ['Maturity/7/2026-10-05', 'Interest/3/2026-10-09', 'Maturity/1/2026-10-11', 'Maturity/0/2026-10-12'], 'deposit 7 reminders');
+    ok(rem.find(r => r.depositId === '7' && r.daysBefore === 0).message.includes('₹1,50,000 + ₹10,650 interest'), 'maturity message includes the interest');
+    ok(rem.every(r => !/SBI001245|IB004521/.test(r.message)), 'reminders never contain full deposit numbers');
+    ok(!rem.some(r => r.type === 'Renewal'), 'monthly renewal reminders off by default');
+    const withRenew = M.buildReminders(data, { notify: Object.assign({}, M.DEFAULT_PREFS.notify, { renewalDays: [0] }) }, today, 30);
+    ok(withRenew.some(r => r.type === 'Renewal' && r.depositId === '1' && r.notifyOn === '2026-10-15'), 'monthly renewal reminder when switched on');
+
+    /* ---------- add a deposit, mark received, renew */
+    const f = { memberId: d1.memberId, bank: 'Canara Bank', accountNumber: 'CB999001', interestType: 'Simple', interestRate: '7.5',
+      depositAmount: '100000', startDate: '2026-09-26', days: '180', maturityDate: '', incomeDate: '', interestAmount: '', notes: '' };
+    eq(M.validateDeposit(f), {}, 'valid new deposit');
+    const r1 = M.saveDeposit(data, f, { today });
+    eq([r1.deposit.id, r1.deposit.maturityDate, r1.deposit.incomeDate, r1.deposit.interestAmount], ['21', '2027-03-25', '2027-03-25', 3750], 'new deposit gets S.No 21, mature date and interest');
+    ok(Object.keys(M.validateDeposit(Object.assign({}, f, { days: '', maturityDate: '' }))).includes('days'), 'needs days or mature date');
+
+    const p7 = M.paymentsOf(data, '7')[0];
+    M.markReceived(data, p7.id, { amount: 10650, date: '2026-10-12' }, today);
+    eq(M.payment(data, p7.id).status, 'Received', 'interest marked received');
+    const draft = M.renewalDraft(dep(7));
+    eq([draft.depositAmount, draft.startDate, draft.days, draft.notes], [160650, '2026-10-12', 365, 'Renewal of S.No 7'], 'cumulative renewal adds the interest');
+    const rn = M.renewDeposit(data, '7', draft, { today: '2026-10-13' });
+    eq([rn.deposit.id, rn.deposit.maturityDate, dep(7).status, dep(7).closedDate, dep(7).notes],
+      ['22', '2027-10-12', 'Closed', '2026-10-12', 'Renewal required · Renewed as S.No 22'], 'renew closes the old deposit and links them');
+
+    /* ---------- search */
+    eq(M.searchDeposits(data, { q: '1245' }, today).map(d => d.id), ['1'], 'search by last digits of Deposit No');
+    eq(M.searchDeposits(data, { status: 'Maturing Soon' }, today).map(d => d.id).sort(), ['19', '9'], 'filter by position');
+    eq(M.searchDeposits(data, { interestType: 'Cumulative', status: 'Open' }, today).length, 6, 'filter by interest type');
+
+    /* ---------- Excel round trip in the 16-column layout */
+    const sheets = M.workbookSheets(data, M.DEFAULT_PREFS, today);
+    eq(sheets.map(s => s.name), ['Deposits', 'FamilyMembers', 'Payments', 'Notifications'], 'sheet order');
+    eq(sheets[0].columns.map(c => c.header), ['S.No', 'Bank Name', 'Deposit No', 'Depositer Name', 'Interest type', 'percentage', 'Deposit Value',
+      'Deposit Date', 'No of Days', 'Mature Date', 'Deposit position', 'monthly Renewal Date', 'Income Date', 'Amount of Intersest', 'Deposited Village', 'Remarks'],
+      'exact 16 headings of the family sheet');
+    const bytes = await DM.xlsx.write(sheets);
+    const back = M.prepareImport(await DM.xlsx.read(bytes), today);
+    eq(back.errors.concat(back.warnings), [], 'own export imports cleanly');
+    const fin2 = M.finalizeImport(back, 'received', today);
+    const strip = d => JSON.stringify({ m: d.members, d: d.deposits.slice().sort((a, b) => M.idNum(a.id) - M.idNum(b.id)), p: d.payments.slice().sort((a, b) => a.id < b.id ? -1 : 1) });
+    const A = JSON.parse(strip(fin2.data)), B = JSON.parse(strip(M.normalizeData(JSON.parse(JSON.stringify(data)))));
+    ['m', 'd', 'p'].forEach(k => {
+      if (A[k].length !== B[k].length) fails.push('round trip ' + k + ' count ' + A[k].length + ' vs ' + B[k].length);
+      A[k].forEach((row, i) => { const a = JSON.stringify(row), b = JSON.stringify(B[k][i]); if (a !== b) fails.push('round trip ' + k + '[' + i + ']\n   got ' + a + '\n   exp ' + b); });
+    });
+
+    /* ---------- closing early keeps its date through Excel */
+    M.closeDeposit(data, '15', '2026-11-01', today);
+    eq(dep(15).notes, 'Long term deposit · Closed early on 01-11-2026', 'early closure noted in Remarks');
+    const again = M.finalizeImport(M.prepareImport(await DM.xlsx.read(await DM.xlsx.write(M.workbookSheets(data, M.DEFAULT_PREFS, today))), today), 'received', today);
+    eq(again.data.deposits.find(d => d.id === '15').closedDate, '2026-11-01', 'closing date read back from Remarks');
+    M.reopenDeposit(data, '15', today);
+    eq(dep(15).notes, 'Long term deposit', 'reopening removes the note');
+
+    /* ---------- data saved by version 1 upgrades cleanly */
+    const v1 = { version: 1, members: [{ id: 'M001', name: 'Lakshmi', village: 'Tambaram', phone: '' }],
+      deposits: [{ id: 'D001', memberId: 'M001', village: 'Tambaram', bank: 'SBI', accountNumber: '30012344582', depositAmount: 100000, interestRate: 7.25,
+        paymentAmount: 1812.5, frequency: 'Quarterly', startDate: '2026-03-20', firstPaymentDate: '2026-06-20', maturityDate: '2028-03-20', status: 'Active', closedDate: '', notes: '' }],
+      payments: [{ id: 'P00001', depositId: 'D001', dueDate: '2026-06-20', expectedAmount: 1812.5, receivedAmount: 1812.5, receivedDate: '2026-06-20', status: 'Received', notes: '' }] };
+    const up = M.normalizeData(v1);
+    M.rollForward(up, today);
+    const u = up.deposits[0];
+    eq([u.interestType, u.days, u.incomeDate, u.interestAmount], ['Simple', 731, '2028-03-20', 14500], 'v1 deposit upgraded');
+    eq(up.payments.map(p => p.dueDate + ':' + p.status), ['2026-06-20:Received', '2028-03-20:Pending'], 'v1 history kept, income row added');
+    const nu = M.saveDeposit(up, { memberId: 'M001', bank: 'X', interestType: 'Simple', depositAmount: 1000, startDate: today, days: 365 }, { today });
+    eq(nu.deposit.id, '2', 'next S.No after a v1 id');
+
     const tpl = await DM.xlsx.write(M.workbookSheets(M.emptyData(), M.DEFAULT_PREFS, today, { template: true }));
-    window.__tpl = U.bytesToBase64(tpl);
-    return { fails, log, xlsx: window.__xlsx, tpl: window.__tpl };
-  });
+    return { fails, xlsx: U.bytesToBase64(bytes), tpl: U.bytesToBase64(tpl) };
+  }, FIXTURE);
 
   fs.writeFileSync(path.join(OUT, 'roundtrip.xlsx'), Buffer.from(result.xlsx, 'base64'));
   fs.writeFileSync(path.join(OUT, 'template.xlsx'), Buffer.from(result.tpl, 'base64'));

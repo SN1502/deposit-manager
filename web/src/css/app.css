@@ -514,3 +514,7 @@ body.no-tabs .toast-wrap { bottom: calc(var(--safe-bottom) + 96px); }
 }
 .lock .logo svg { border-radius: 20px; box-shadow: 0 0 0 2px rgba(255, 255, 255, .28); }
 .btn-row > .btn { padding: 0 12px; }
+
+.field > label.check-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 0; font-weight: 500; font-size: 15px; }
+.check-row input { width: 22px; height: 22px; margin: 0; accent-color: var(--brand-2); flex: none; }
+.input:disabled { background: var(--surface-2); color: var(--text-2); }
