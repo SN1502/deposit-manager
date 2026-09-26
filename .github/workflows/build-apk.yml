@@ -1,0 +1,71 @@
+# Builds the Deposit Manager APK in the cloud (no computer needed) and publishes it as a
+# GitHub release, so it can be downloaded straight onto a phone.
+#
+# Works with either repository layout:
+#   1. the whole Android project at the top of the repository, or
+#   2. just this workflow file plus DepositManager-Android.zip (easy to upload from a phone).
+
+name: Build APK
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Get the files
+        uses: actions/checkout@v4
+
+      - name: Find the Android project
+        run: |
+          if [ -f settings.gradle ]; then
+            echo "PROJECT_DIR=$PWD" >> "$GITHUB_ENV"
+          else
+            ZIP=$(ls *.zip 2>/dev/null | head -n 1)
+            if [ -z "$ZIP" ]; then
+              echo "::error::No Android project found. Upload DepositManager-Android.zip to the top of the repository."
+              exit 1
+            fi
+            unzip -q -o "$ZIP" -d project
+            SETTINGS=$(find project -maxdepth 3 -name settings.gradle | head -n 1)
+            if [ -z "$SETTINGS" ]; then echo "::error::$ZIP does not contain the Android project."; exit 1; fi
+            echo "PROJECT_DIR=$PWD/$(dirname "$SETTINGS")" >> "$GITHUB_ENV"
+          fi
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build the APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/DepositManager.apk"
+
+      - name: Keep the APK with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: DepositManager-APK
+          path: DepositManager.apk
+
+      - name: Publish the APK as a release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Deposit Manager 1.0.${{ github.run_number }}
+          files: DepositManager.apk
+          body: |
+            Tap **DepositManager.apk** below to download it, then open the file on the phone to install.
+            Installing a newer version keeps all the data already in the app.
