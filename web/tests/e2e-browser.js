@@ -13,6 +13,8 @@ function check(c, m) { if (!c) { fails.push(m); console.log('  ✗ ' + m); } els
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 360, height: 780 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, acceptDownloads: true, locale: 'en-IN' });
   await ctx.addInitScript(() => { delete window.showOpenFilePicker; delete window.showSaveFilePicker; });
+  // The expected dates below are for 26 Sep 2026; fix the clock there so the tests pass on any day.
+  await ctx.clock.setFixedTime(new Date('2026-09-26T10:00:00+05:30'));
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));

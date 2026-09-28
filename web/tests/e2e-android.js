@@ -48,6 +48,8 @@ function check(cond, msg) { if (!cond) { fails.push(msg); console.log('  ✗ ' +
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 393, height: 852 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   await ctx.addInitScript(MOCK);
+  // The expected dates below are for 26 Sep 2026; fix the clock there so the tests pass on any day.
+  await ctx.clock.setFixedTime(new Date('2026-09-26T10:00:00+05:30'));
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
